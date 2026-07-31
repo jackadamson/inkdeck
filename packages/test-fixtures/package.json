@@ -1,0 +1,15 @@
+{
+  "name": "inkdeck-test-fixtures",
+  "private": true,
+  "type": "module",
+  "description": "Type-clean but runtime-broken apps used by the inkdeck CLI tests",
+  "dependencies": {
+    "@jackadamson/inkdeck": "workspace:*",
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@types/react": "^19.1.0",
+    "typescript": "^5.8.0"
+  }
+}
