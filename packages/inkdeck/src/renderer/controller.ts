@@ -31,6 +31,12 @@ import {
 
 const DEFAULT_LONG_PRESS_MS = 500
 const INPUT_PRIORITY_WINDOW_MS = 500
+// Physical key switches bounce: a press can arrive as down→up→down within a
+// few ms, double-firing onPress (which fires on key-down). A key-down within
+// this window of the same key's release is treated as bounce and dropped;
+// releases are never dropped, so pressed-state cannot wedge. Runs on the
+// injectable clock (M3's frozen-time taps must advance past it between taps).
+const KEY_DEBOUNCE_MS = 30
 
 export interface DeckInfo {
   model: string
@@ -96,6 +102,7 @@ export class DeckController {
   #pressedVersion = 0
   #pressListeners = new Set<() => void>()
   #lastInputAt = new Map<number, number>()
+  #lastReleaseAt = new Map<number, number>()
   #longPressTimers = new Map<number, number>()
   #longPressFired = new Set<number>()
 
@@ -453,15 +460,25 @@ export class DeckController {
   #onInputReport(report: Uint8Array): void {
     const states = parseInputReport(this.model, report)
     if (!states) return
+    let anyChange = false
     for (let position = 0; position < states.length; position++) {
       const pressed = states[position]
       if (pressed === this.#pressed[position]) continue
+      const now = this.clock.now()
+      if (pressed) {
+        const releasedAt = this.#lastReleaseAt.get(position)
+        if (releasedAt !== undefined && now - releasedAt < KEY_DEBOUNCE_MS) continue
+      } else {
+        this.#lastReleaseAt.set(position, now)
+      }
+      anyChange = true
       this.#pressed[position] = pressed
       this.#pressedVersion++
-      this.#lastInputAt.set(position, this.clock.now())
+      this.#lastInputAt.set(position, now)
       if (pressed) this.#onKeyDown(position)
       else this.#onKeyUp(position)
     }
+    if (!anyChange) return
     for (const listener of [...this.#pressListeners]) listener()
   }
 

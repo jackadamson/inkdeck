@@ -78,10 +78,16 @@ describe('inkdeck CLI', () => {
     expect(result.stderr).toContain('kaboom')
   }, 60000)
 
-  test('list runs without throwing when no device is attached', async () => {
+  test('list exits 0 whether or not a device is attached', async () => {
     const result = await runCli(['list'])
     expect(result.exitCode).toBe(0)
-    expect(result.stdout.toLowerCase()).toContain('no')
+    const out = result.stdout.toLowerCase()
+    // Either the friendly empty message or one serial\tmodel line per device.
+    if (out.includes('no stream deck')) {
+      expect(out).toContain('no stream deck')
+    } else {
+      expect(result.stdout.trim().split('\n').every((l) => /^\S+\t\S+/.test(l))).toBe(true)
+    }
   })
 
   test('unknown command exits 1 with usage', async () => {

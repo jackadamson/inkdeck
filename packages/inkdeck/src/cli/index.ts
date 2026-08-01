@@ -54,7 +54,34 @@ async function main(): Promise<number> {
     }
 
     case 'dev':
-    case 'start':
+    case 'start': {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        options: {
+          device: { type: 'string' },
+          debug: { type: 'boolean' },
+          simulate: { type: 'string' }, // M3
+        },
+        allowPositionals: true,
+      })
+      const app = positionals[0]
+      if (!app) {
+        console.error(`[inkdeck] ${command} requires <app.tsx>`)
+        console.error(USAGE)
+        return 1
+      }
+      if (values.simulate !== undefined) {
+        console.error('[inkdeck] --simulate lands in M3 (see ROADMAP.md)')
+        return 1
+      }
+      const { startCommand } = await import('./start.js')
+      return await startCommand(app, {
+        device: values.device,
+        debug: values.debug,
+        watch: command === 'dev',
+      })
+    }
+
     case 'agent':
     case 'create':
       console.error(`[inkdeck] "${command}" is not implemented yet — it lands in a later milestone (see ROADMAP.md).`)

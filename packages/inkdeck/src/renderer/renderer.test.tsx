@@ -9,13 +9,15 @@ import { VirtualTransport } from '../transport/virtual.js'
 import { Deck, Key } from './components.js'
 import { DeckController } from './controller.js'
 import { buildManifest } from '../harness/manifest.js'
+import type { Clock } from './clock.js'
+import { FrozenClock } from './clock.js'
 
 const mk2 = modelById('mk2')!
 
-async function mount(element: React.ReactNode) {
+async function mount(element: React.ReactNode, clock?: Clock) {
   const transport = new VirtualTransport(mk2)
   const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial })
+  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, clock })
   await controller.start()
   controller.render(element)
   await controller.settled()
@@ -244,11 +246,41 @@ describe('headless renderer', () => {
     handle.releaseKey(0)
     expect(events).toEqual(['press'])
 
-    // Long press: held past the threshold.
+    // Long press: held past the threshold (after the contact-bounce window —
+    // a re-press hard on the heels of a release is deliberately dropped).
+    await new Promise((resolve) => setTimeout(resolve, 40))
     handle.pressKey(0)
     await new Promise((resolve) => setTimeout(resolve, 80))
     handle.releaseKey(0)
     expect(events).toEqual(['press', 'long'])
+    await controller.shutdown()
+  })
+
+  test('contact bounce is debounced: re-press within the window is dropped, releases never are', async () => {
+    const clock = new FrozenClock()
+    let presses = 0
+    const { controller, handle } = await mount(
+      <Deck>
+        <Key position={0} onPress={() => presses++} />
+      </Deck>,
+      clock,
+    )
+    // Clean press.
+    handle.pressKey(0)
+    expect(presses).toBe(1)
+    clock.advance(100)
+    // Release followed by a bounce re-press 5 ms later: dropped.
+    handle.releaseKey(0)
+    clock.advance(5)
+    handle.pressKey(0)
+    expect(presses).toBe(1)
+    expect(controller.isPressed(0)).toBe(false)
+    // Past the window a real press fires again.
+    clock.advance(50)
+    handle.pressKey(0)
+    expect(presses).toBe(2)
+    handle.releaseKey(0)
+    expect(controller.isPressed(0)).toBe(false)
     await controller.shutdown()
   })
 })

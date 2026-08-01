@@ -35,17 +35,23 @@ Status legend: ✅ done · 🔨 in progress · ⬜ not started · ⏸ blocked (r
   - `check` exits 0 on the example, 1 on a type error, 1 on a key that renders its error tile
   - duplicate `position` fails with both stacks; a throwing component paints the fallback tile on its key only
 
-## M2 — Hardware end-to-end ⬜ (⏸ needs a physical MK.2/XL on macOS — not possible in this container)
+## M2 — Hardware end-to-end ✅ (verified on a Stream Deck XL, macOS 15.6.1 Apple Silicon, 2026-08-01)
 
-- ⬜ Verify transcribed constants on hardware (product IDs, input offsets, packet framing — treat as unverified until then)
-- ⬜ Exercise IOKitTransport for real: images, brightness, presses, reset-on-exit; fix what the FFI ceremony got wrong
-- ⬜ `inkdeck start` / `inkdeck dev` (minimal, no hot reload yet) against hardware
-- ⬜ `examples/mic-mute/HARDWARE.md` manual checklist
-- ⬜ Acceptance: checklist passes; press-to-repaint < 100 ms
+- ✅ Verify transcribed constants on hardware — all gen-2 values checked out on the XL (productId 0x006c, 8×4 @ 96×96, image/brightness/reset framing, serial/firmware feature reads 0x06/0x05, key data at raw offset 4, row-major positions)
+- ✅ Exercise IOKitTransport for real — and fix what the FFI ceremony got wrong:
+  - **tagged pointers**: Apple Silicon CF returns small CFNumbers/short CFStrings as full-64-bit tagged pointers; `FFIType.ptr`'s double representation corrupted them (segfault). CF refs now cross the FFI as `bigint` (`FFIType.u64`) — see DECISIONS.md
+  - **input reports**: the IOKit callback buffer already includes the report ID; the transport was re-prepending it, shifting every report by one byte
+  - idempotent feature reports (brightness/reset) retry once on transient IOReturn errors (observed one `kIOReturnBadArgument` after an image burst)
+- ✅ `inkdeck start` / `inkdeck dev` (minimal watch: cache-busting re-import, transport handle stays alive, broken saves keep the session running; no-flicker/changed-set polish stays in M4)
+- ✅ `packages/inkdeck/scripts/hardware-smoke.ts` — automated per-operation hardware check (all PASS)
+- ✅ `examples/mic-mute/HARDWARE.md` manual checklist (all human-verifiable items confirmed; two low-risk items left noted for a rainy day: poll-reconcile without press, failure-UX messages)
+- ✅ Contact-bounce debounce: key-down within 30 ms of the same key's release is dropped (user-reported double toggle on hardware; runs on the injectable clock, unit-tested with FrozenClock)
+- ✅ Acceptance: checklist passes; press-to-repaint human-verified "very responsive" (measured scene→RGBA→JPEG→HID ≈ 1 ms median/key on XL)
 
 ## M3 — Agent harness + simulator ⬜
 
 - ⬜ `inkdeck agent` JSON-lines protocol (§11.2) with `--freeze-time` (FrozenClock exists) / `--mock-exec` (interceptor seam exists; wire `mocks.json` format)
+- ⬜ Frozen-time `tap` must advance the clock past the 30 ms contact-bounce debounce between taps, or back-to-back taps coalesce (see M2 debounce)
 - ⬜ `@jackadamson/inkdeck/testing` helper (`renderDeck`) + example's harness-based test
 - ⬜ Browser simulator (`--simulate`) as a client of the harness pipeline (§16: loopback only, ephemeral port, session token, Origin/Host validation)
 - ⬜ Precise `rendered`-event sequencing for the harness (today `settled()` uses quiescence polling — fine for render/check, too coarse for scripted sessions)
@@ -68,6 +74,6 @@ binding via dlsym.
 
 ## Known gaps / risks
 
-- Model constants and the entire IOKit/CF FFI layer are **unverified on hardware** (M2 gate); values are cited to the reference repo but hand-transcribed.
+- Hardware verification covers the **XL only** — MK.2/V2/Neo share the gen-2 protocol and should Just Work, but their product IDs/geometry are still transcription-only.
 - `settled()` quiescence polling adds ~10 ms latency and is not event-precise — needs tightening for the M3 harness protocol.
 - Takumi v2 resolves Tailwind via `tw`; the supported utility subset is not yet documented for app authors (§18.6 — do this with the scaffold README in M4).

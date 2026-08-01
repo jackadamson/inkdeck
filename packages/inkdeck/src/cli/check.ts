@@ -4,22 +4,27 @@
 // (or inkdeck's own devDependency). typescript is deliberately NOT a runtime
 // dependency of the published package (§2's approved list) — see DECISIONS.md.
 
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { loadApp, resolveHeadlessModel, startHeadless } from './headless.js'
 
 type Ts = typeof import('typescript')
 
 async function loadTypescript(appDir: string): Promise<Ts | null> {
+  // typescript is a CJS package; load it with require() semantics. Dynamic
+  // import() of the CJS bundle can yield a namespace missing dynamically
+  // assigned members (ts.sys is undefined on some Bun/resolution combinations).
   // Prefer the app project's own typescript so its version wins.
-  const candidates = [
-    () => import(Bun.resolveSync('typescript', appDir)),
-    () => import('typescript'),
+  const requirers = [
+    () => createRequire(join(appDir, 'package.json'))('typescript'),
+    () => createRequire(import.meta.url)('typescript'),
   ]
-  for (const load of candidates) {
+  for (const load of requirers) {
     try {
-      const mod = await load()
-      return (mod.default ?? mod) as Ts
+      const mod = load()
+      const ts = (mod?.default ?? mod) as Ts
+      if (ts?.sys) return ts
     } catch {
       // try next
     }

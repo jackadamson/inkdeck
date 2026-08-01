@@ -1,12 +1,19 @@
 // IOKit HID transport for macOS hardware, bound with bun:ffi (SPEC §4.2).
 // No compiled addon, no node-gyp. Only loadable on darwin.
 //
-// UNVERIFIED ON HARDWARE — M2 exercises this end-to-end on a real MK.2/XL.
+// Object references (IOHIDManagerRef, IOHIDDeviceRef, CF property values) are
+// carried as bigint via FFIType.u64 — see cf.ts for why FFIType.ptr's
+// double-based representation corrupts tagged CF pointers on Apple Silicon.
+// Property values (ProductID CFNumbers, short serial CFStrings) are exactly
+// the refs that come back tagged.
 
 import { dlopen, FFIType, JSCallback, ptr, toArrayBuffer, type Pointer } from 'bun:ffi'
 import { modelByProductId, VENDOR_ID } from '../device/models.js'
 import type { DeviceInfo, Transport, TransportHandle } from './iface.js'
 import {
+  bufPtr,
+  CF_NULL,
+  type CFRef,
   cfDictionary,
   cfNumber,
   cfNumberToJs,
@@ -33,30 +40,30 @@ let ioLib: ReturnType<typeof openIOKit> | null = null
 
 function openIOKit() {
   return dlopen(IOKIT_PATH, {
-    IOHIDManagerCreate: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.ptr },
-    IOHIDManagerSetDeviceMatching: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
-    IOHIDManagerOpen: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
-    IOHIDManagerCopyDevices: { args: [FFIType.ptr], returns: FFIType.ptr },
-    IOHIDDeviceOpen: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
-    IOHIDDeviceClose: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
-    IOHIDDeviceGetProperty: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+    IOHIDManagerCreate: { args: [FFIType.u64, FFIType.u32], returns: FFIType.u64 },
+    IOHIDManagerSetDeviceMatching: { args: [FFIType.u64, FFIType.u64], returns: FFIType.void },
+    IOHIDManagerOpen: { args: [FFIType.u64, FFIType.u32], returns: FFIType.i32 },
+    IOHIDManagerCopyDevices: { args: [FFIType.u64], returns: FFIType.u64 },
+    IOHIDDeviceOpen: { args: [FFIType.u64, FFIType.u32], returns: FFIType.i32 },
+    IOHIDDeviceClose: { args: [FFIType.u64, FFIType.u32], returns: FFIType.i32 },
+    IOHIDDeviceGetProperty: { args: [FFIType.u64, FFIType.u64], returns: FFIType.u64 },
     IOHIDDeviceSetReport: {
       // (device, IOHIDReportType, CFIndex reportID, const uint8_t *report, CFIndex length)
-      args: [FFIType.ptr, FFIType.i32, FFIType.i64, FFIType.ptr, FFIType.i64],
+      args: [FFIType.u64, FFIType.i32, FFIType.i64, FFIType.u64, FFIType.i64],
       returns: FFIType.i32,
     },
     IOHIDDeviceGetReport: {
       // (device, IOHIDReportType, CFIndex reportID, uint8_t *report, CFIndex *pReportLength)
-      args: [FFIType.ptr, FFIType.i32, FFIType.i64, FFIType.ptr, FFIType.ptr],
+      args: [FFIType.u64, FFIType.i32, FFIType.i64, FFIType.u64, FFIType.u64],
       returns: FFIType.i32,
     },
     IOHIDDeviceRegisterInputReportCallback: {
       // (device, uint8_t *report, CFIndex reportLength, IOHIDReportCallback, void *context)
-      args: [FFIType.ptr, FFIType.ptr, FFIType.i64, FFIType.ptr, FFIType.ptr],
+      args: [FFIType.u64, FFIType.u64, FFIType.i64, FFIType.u64, FFIType.u64],
       returns: FFIType.void,
     },
     IOHIDDeviceScheduleWithRunLoop: {
-      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      args: [FFIType.u64, FFIType.u64, FFIType.u64],
       returns: FFIType.void,
     },
   })
@@ -74,7 +81,6 @@ function iokit() {
 const kIOHIDVendorIDKey = 'VendorID'
 const kIOHIDProductIDKey = 'ProductID'
 const kIOHIDSerialNumberKey = 'SerialNumber'
-const kIOHIDMaxInputReportSizeKey = 'MaxInputReportSize'
 
 const INPUT_BUFFER_SIZE = 1024
 const RUNLOOP_PUMP_MS = 4
@@ -103,13 +109,13 @@ function openFailureMessage(serial: string): string {
 }
 
 export class IOKitTransport implements Transport {
-  #manager: Pointer | null = null
-  #devicesBySerial = new Map<string, Pointer>()
+  #manager: CFRef = CF_NULL
+  #devicesBySerial = new Map<string, CFRef>()
 
   #ensureManager(): void {
     if (this.#manager) return
     const io = iokit()
-    const manager = io.IOHIDManagerCreate(null, kIOHIDOptionsTypeNone)
+    const manager = io.IOHIDManagerCreate(CF_NULL, kIOHIDOptionsTypeNone)
     if (!manager) throw new Error('[inkdeck] IOHIDManagerCreate failed')
     // Match on { VendorID: 0x0fd9 } only; the model is resolved from ProductID
     // afterwards (SPEC §4.2).
@@ -127,7 +133,7 @@ export class IOKitTransport implements Transport {
     this.#manager = manager
   }
 
-  #deviceProperty(device: Pointer, key: string): Pointer | null {
+  #deviceProperty(device: CFRef, key: string): CFRef {
     const io = iokit()
     const cfKey = cfString(key)
     const value = io.IOHIDDeviceGetProperty(device, cfKey)
@@ -138,7 +144,7 @@ export class IOKitTransport implements Transport {
   async list(): Promise<DeviceInfo[]> {
     this.#ensureManager()
     const io = iokit()
-    const set = io.IOHIDManagerCopyDevices(this.#manager!)
+    const set = io.IOHIDManagerCopyDevices(this.#manager)
     const devices = set ? cfSetToArray(set) : []
     const infos: DeviceInfo[] = []
     this.#devicesBySerial.clear()
@@ -180,15 +186,15 @@ export class IOKitTransport implements Transport {
 }
 
 class IOKitHandle implements TransportHandle {
-  #device: Pointer
+  #device: CFRef
   #inputCbs: Array<(report: Uint8Array) => void> = []
   #inputBuffer = new Uint8Array(INPUT_BUFFER_SIZE)
   #callback: JSCallback | null = null
   #pump: ReturnType<typeof setInterval> | null = null
-  #runLoopMode: Pointer
+  #runLoopMode: CFRef
   #closed = false
 
-  constructor(device: Pointer) {
+  constructor(device: CFRef) {
     this.#device = device
     // The default run loop mode's contents are the literal string below;
     // CFString comparison is by value, so a fresh CFString works for both
@@ -202,29 +208,31 @@ class IOKitHandle implements TransportHandle {
     // IOHIDReportCallback: (void *context, IOReturn result, void *sender,
     //                       IOHIDReportType type, uint32_t reportID,
     //                       uint8_t *report, CFIndex reportLength)
+    // The report buffer is a real heap pointer (never tagged), so FFIType.ptr
+    // is safe here and is what toArrayBuffer wants.
     this.#callback = new JSCallback(
-      (_ctx: Pointer, _result: number, _sender: Pointer, _type: number, reportId: number, report: Pointer, length: number | bigint) => {
+      (_ctx: Pointer, _result: number, _sender: Pointer, _type: number, _reportId: number, report: Pointer, length: number | bigint) => {
         const len = Number(length)
         if (len <= 0) return
-        const data = new Uint8Array(toArrayBuffer(report, 0, len))
-        // IOKit strips the report ID from the buffer; the Transport contract
-        // includes it as the first byte, so re-prepend it.
-        const full = new Uint8Array(len + 1)
-        full[0] = reportId
-        full.set(data, 1)
-        for (const cb of this.#inputCbs) cb(full)
+        // For numbered-report devices the IOKit callback buffer already begins
+        // with the report ID (verified on an XL: [0x01, 0x00, keyCountLE(2),
+        // states…]) — pass it through as-is; the Transport contract wants the
+        // ID as the first byte. Copy: the buffer is reused by IOKit.
+        const data = new Uint8Array(toArrayBuffer(report, 0, len)).slice()
+        for (const cb of this.#inputCbs) cb(data)
       },
       {
         args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.u32, FFIType.ptr, FFIType.i64],
         returns: FFIType.void,
       },
     )
+    if (!this.#callback.ptr) throw new Error('[inkdeck] JSCallback allocation failed')
     io.IOHIDDeviceRegisterInputReportCallback(
       this.#device,
-      ptr(this.#inputBuffer),
-      this.#inputBuffer.length,
-      this.#callback.ptr,
-      null,
+      bufPtr(this.#inputBuffer),
+      BigInt(this.#inputBuffer.length),
+      BigInt(this.#callback.ptr),
+      CF_NULL,
     )
     io.IOHIDDeviceScheduleWithRunLoop(this.#device, cfRunLoopGetCurrent(), this.#runLoopMode)
     // Pump the run loop on an interval. The interval is also the process
@@ -241,9 +249,9 @@ class IOKitHandle implements TransportHandle {
     const rc = io.IOHIDDeviceSetReport(
       this.#device,
       kIOHIDReportTypeOutput,
-      report[0],
-      ptr(report),
-      report.length,
+      BigInt(report[0]),
+      bufPtr(report),
+      BigInt(report.length),
     )
     if (rc !== kIOReturnSuccess) {
       throw new Error(`[inkdeck] IOHIDDeviceSetReport(output) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
@@ -253,16 +261,22 @@ class IOKitHandle implements TransportHandle {
   async sendFeature(report: Uint8Array): Promise<void> {
     this.#assertOpen()
     const io = iokit()
-    const rc = io.IOHIDDeviceSetReport(
-      this.#device,
-      kIOHIDReportTypeFeature,
-      report[0],
-      ptr(report),
-      report.length,
-    )
-    if (rc !== kIOReturnSuccess) {
-      throw new Error(`[inkdeck] IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+    // Feature reports (brightness/reset) are idempotent, and real hardware
+    // occasionally rejects one transiently (observed: kIOReturnBadArgument
+    // 0xe00002c2 on an XL right after an image burst) — retry once.
+    let rc = 0
+    for (let attempt = 0; attempt < 2; attempt++) {
+      rc = io.IOHIDDeviceSetReport(
+        this.#device,
+        kIOHIDReportTypeFeature,
+        BigInt(report[0]),
+        bufPtr(report),
+        BigInt(report.length),
+      )
+      if (rc === kIOReturnSuccess) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
     }
+    throw new Error(`[inkdeck] IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
   }
 
   async getFeature(reportId: number, length: number): Promise<Uint8Array> {
@@ -274,9 +288,9 @@ class IOKitHandle implements TransportHandle {
     const rc = io.IOHIDDeviceGetReport(
       this.#device,
       kIOHIDReportTypeFeature,
-      reportId,
-      ptr(buffer),
-      ptr(lengthStorage),
+      BigInt(reportId),
+      bufPtr(buffer),
+      bufPtr(lengthStorage),
     )
     if (rc !== kIOReturnSuccess) {
       throw new Error(`[inkdeck] IOHIDDeviceGetReport failed (IOReturn 0x${(rc >>> 0).toString(16)})`)

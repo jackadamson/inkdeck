@@ -90,3 +90,53 @@ instead of logging stack traces every tick.
 with `dlsym(RTLD_DEFAULT, …)` through libSystem. The run-loop mode CFString is
 created by value (`"kCFRunLoopDefaultMode"` — CFString comparison is by
 contents) instead of binding the `kCFRunLoopDefaultMode` data symbol.
+
+## CF/IOKit refs cross the FFI as bigint (FFIType.u64), never FFIType.ptr
+
+First hardware pass (M2, Apple Silicon): CoreFoundation returns **tagged
+pointers** for small CFNumbers and short CFStrings — the object is encoded in
+the pointer bits and uses all 64 of them (e.g. a CFNumber ref of
+`0xAAEB…` > 2^63). `bun:ffi`'s `FFIType.ptr` surfaces pointers as JS doubles,
+which round above 2^53, so tagged refs came back corrupted and the next CF
+call segfaulted (this is why the CF suite could only fail on real macOS).
+`cf.ts`/`iokit.ts` now declare every CF-ref-carrying argument/return as
+`FFIType.u64` and carry refs as `bigint` (`type CFRef = bigint`). Raw data
+buffers (report bytes, input buffers) are real heap pointers and stay on
+`FFIType.ptr`/`toArrayBuffer`.
+
+## typescript is loaded with createRequire, not dynamic import()
+
+`import()` of typescript's CJS bundle yields a namespace whose dynamically
+assigned members are missing on some Bun/resolution combinations (`ts.sys`
+was `undefined` via the bare-specifier fallback path on Bun 1.3.14 while the
+same import worked when resolved from the app dir). `check` now loads the
+compiler with `createRequire` (app project first, then inkdeck's
+devDependency) and validates `ts.sys` exists before using a candidate.
+
+## Idempotent feature reports retry once at the IOKit transport
+
+On the XL, a reset sent immediately after an image burst transiently failed
+with `kIOReturnBadArgument` (0xe00002c2) and succeeded on every retry probe.
+Feature reports we send (brightness, reset) are idempotent, so
+`IOKitHandle.sendFeature` retries once after 20 ms before throwing. The
+Transport interface is unchanged (§4.1's five operations).
+
+## IOKit input callback buffers include the report ID
+
+The transport originally re-prepended the callback's `reportID` parameter to
+the buffer, assuming IOKit strips it the way node-hid presents data. Raw
+capture on the XL shows the buffer already begins with the ID
+(`[0x01, 0x00, keyCountLE(2), states…]`), so the prepend shifted every input
+report by one byte and presses parsed as non-button reports. The callback now
+passes the buffer through as-is (copied — IOKit reuses it), and the protocol
+layer's transcribed offsets (type at 1, key data at 4) are hardware-verified.
+
+## 30 ms contact-bounce debounce at the controller
+
+`onPress` fires on key-down (press semantics above), so switch bounce
+(down→up→down within a few ms) double-fires handlers — observed as occasional
+double mute-toggles on hardware. The controller drops a key-down arriving
+within 30 ms of the same key's release; releases are never dropped, so
+pressed-state cannot wedge, and a suppressed bounce leaves state consistent.
+Runs on the injectable clock; M3's frozen-time `tap` must advance the clock
+between deliberate back-to-back taps.
