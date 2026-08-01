@@ -5,6 +5,18 @@
     "": {
       "name": "inkdeck-monorepo",
     },
+    "examples/aurora": {
+      "name": "inkdeck-example-aurora",
+      "dependencies": {
+        "@jackadamson/inkdeck": "workspace:*",
+        "react": "^19.1.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.2.0",
+        "@types/react": "^19.1.0",
+        "typescript": "^5.8.0",
+      },
+    },
     "examples/mic-mute": {
       "name": "inkdeck-example-mic-mute",
       "dependencies": {
@@ -147,6 +159,8 @@
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
+
+    "inkdeck-example-aurora": ["inkdeck-example-aurora@workspace:examples/aurora"],
 
     "inkdeck-example-mic-mute": ["inkdeck-example-mic-mute@workspace:examples/mic-mute"],
 
