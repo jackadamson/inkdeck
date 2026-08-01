@@ -7,9 +7,10 @@ const USAGE = `Usage:
   inkdeck render <app.tsx> --out DIR [--model M]   headless one-shot: PNGs + manifest.json
   inkdeck check <app.tsx>                          typecheck + one headless render; exit 0/1
   inkdeck list                                     attached devices: model, serial
-  inkdeck dev <app.tsx> [--device S]               watch + hot reload         (M2/M4)
-  inkdeck start <app.tsx> [--device S]             run once, no watch         (M2)
-  inkdeck agent <app.tsx> [--model M] [...]        JSON-lines harness         (M3)
+  inkdeck dev <app.tsx> [--device S] [--simulate [--model M]]    watch + reload on save
+  inkdeck start <app.tsx> [--device S] [--simulate [--model M]]  run once, no watch
+  inkdeck agent <app.tsx> [--model M] [--freeze-time] [--mock-exec F]
+                                                   JSON-lines harness (SPEC §11.2)
 `
 
 async function main(): Promise<number> {
@@ -60,7 +61,8 @@ async function main(): Promise<number> {
         options: {
           device: { type: 'string' },
           debug: { type: 'boolean' },
-          simulate: { type: 'string' }, // M3
+          simulate: { type: 'boolean' },
+          model: { type: 'string' }, // simulator model override (§8: --simulate --model xl)
         },
         allowPositionals: true,
       })
@@ -70,9 +72,9 @@ async function main(): Promise<number> {
         console.error(USAGE)
         return 1
       }
-      if (values.simulate !== undefined) {
-        console.error('[inkdeck] --simulate lands in M3 (see ROADMAP.md)')
-        return 1
+      if (values.simulate) {
+        const { simulateCommand } = await import('./simulate.js')
+        return await simulateCommand(app, { model: values.model, watch: command === 'dev' })
       }
       const { startCommand } = await import('./start.js')
       return await startCommand(app, {
@@ -82,7 +84,30 @@ async function main(): Promise<number> {
       })
     }
 
-    case 'agent':
+    case 'agent': {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        options: {
+          model: { type: 'string' },
+          'freeze-time': { type: 'boolean' },
+          'mock-exec': { type: 'string' },
+        },
+        allowPositionals: true,
+      })
+      const app = positionals[0]
+      if (!app) {
+        console.error('[inkdeck] agent requires <app.tsx>')
+        console.error(USAGE)
+        return 1
+      }
+      const { agentCommand } = await import('./agent.js')
+      return await agentCommand(app, {
+        model: values.model,
+        freezeTime: values['freeze-time'],
+        mockExec: values['mock-exec'],
+      })
+    }
+
     case 'create':
       console.error(`[inkdeck] "${command}" is not implemented yet — it lands in a later milestone (see ROADMAP.md).`)
       return 1

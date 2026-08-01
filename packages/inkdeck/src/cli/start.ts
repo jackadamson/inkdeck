@@ -16,6 +16,42 @@ export interface StartOptions {
   debug?: boolean
 }
 
+/**
+ * Minimal reload-on-save (M2 semantics; the no-flicker/changed-set polish is
+ * M4): cache-busting dynamic import so the transport handle and controller
+ * stay alive; a broken save logs and keeps watching (§10). Shared by
+ * `dev` (hardware) and `dev --simulate`.
+ */
+export function watchApp(absPath: string, displayPath: string, controller: DeckController): void {
+  let generation = 0
+  let reloading = false
+  const reload = async () => {
+    generation++
+    try {
+      const mod = await import(`${absPath}?inkdeck-reload=${generation}`)
+      const App = mod.default as ComponentType
+      if (typeof App !== 'function') {
+        console.error(`[inkdeck] ${displayPath} no longer default-exports a component — keeping the previous render`)
+        return
+      }
+      controller.render(createElement(App))
+      await controller.settled()
+      console.error(`[inkdeck] reloaded ${displayPath}`)
+    } catch (error) {
+      console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    } finally {
+      reloading = false
+    }
+  }
+  watch(absPath, () => {
+    if (reloading) return
+    reloading = true
+    // Debounce editor save bursts (write + rename events).
+    setTimeout(() => void reload(), 50)
+  })
+  console.error(`[inkdeck] watching ${displayPath} — save to reload, Ctrl-C to exit`)
+}
+
 export async function startCommand(appPath: string, options: StartOptions = {}): Promise<number> {
   const app = await loadApp(appPath)
 
@@ -65,36 +101,7 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   }
 
   if (options.watch) {
-    let generation = 0
-    let reloading = false
-    watch(app.appPath, () => {
-      if (reloading) return
-      reloading = true
-      // Debounce editor save bursts (write + rename events).
-      setTimeout(() => void reload(), 50)
-    })
-    const reload = async () => {
-      generation++
-      try {
-        // Cache-busting dynamic import: the transport handle and controller
-        // stay alive; only the app module is re-evaluated (§9 dev semantics).
-        const mod = await import(`${app.appPath}?inkdeck-reload=${generation}`)
-        const App = mod.default as ComponentType
-        if (typeof App !== 'function') {
-          console.error(`[inkdeck] ${appPath} no longer default-exports a component — keeping the previous render`)
-          return
-        }
-        controller.render(createElement(App))
-        await controller.settled()
-        console.error(`[inkdeck] reloaded ${appPath}`)
-      } catch (error) {
-        // A broken save must not kill the session; keep watching (§10).
-        console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-      } finally {
-        reloading = false
-      }
-    }
-    console.error(`[inkdeck] watching ${appPath} — save to reload, Ctrl-C to exit`)
+    watchApp(app.appPath, appPath, controller)
   }
 
   // Long-running from here: the IOKit run-loop pump interval keeps the

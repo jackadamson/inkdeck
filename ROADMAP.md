@@ -48,14 +48,14 @@ Status legend: ✅ done · 🔨 in progress · ⬜ not started · ⏸ blocked (r
 - ✅ Contact-bounce debounce: key-down within 30 ms of the same key's release is dropped (user-reported double toggle on hardware; runs on the injectable clock, unit-tested with FrozenClock)
 - ✅ Acceptance: checklist passes; press-to-repaint human-verified "very responsive" (measured scene→RGBA→JPEG→HID ≈ 1 ms median/key on XL)
 
-## M3 — Agent harness + simulator ⬜
+## M3 — Agent harness + simulator ✅
 
-- ⬜ `inkdeck agent` JSON-lines protocol (§11.2) with `--freeze-time` (FrozenClock exists) / `--mock-exec` (interceptor seam exists; wire `mocks.json` format)
-- ⬜ Frozen-time `tap` must advance the clock past the 30 ms contact-bounce debounce between taps, or back-to-back taps coalesce (see M2 debounce)
-- ⬜ `@jackadamson/inkdeck/testing` helper (`renderDeck`) + example's harness-based test
-- ⬜ Browser simulator (`--simulate`) as a client of the harness pipeline (§16: loopback only, ephemeral port, session token, Origin/Host validation)
-- ⬜ Precise `rendered`-event sequencing for the harness (today `settled()` uses quiescence polling — fine for render/check, too coarse for scripted sessions)
-- ⬜ Acceptance: `harness/protocol.test.ts` scripted session passes; example's test passes with mocked `osascript`
+- ✅ `inkdeck agent` JSON-lines protocol (§11.2): press/release/tap/snapshot/advanceTime/writeFrames/exit → ready/rendered/state/frames/error/log/exit events; `--freeze-time` + `--mock-exec` (unmatched commands resolve exit 127 and emit an `error` event — a visible gap, never a hang or a real spawn)
+- ✅ Frozen-time `tap` advances the clock through the hold and past the 30 ms contact-bounce window after release
+- ✅ `@jackadamson/inkdeck/testing` (`renderDeck`: key()/tap()/advanceTime()/settled()/unmatchedExecs) + `examples/mic-mute/app.test.tsx` (poll → optimistic toggle → reconcile, all with mocked `osascript`)
+- ✅ Browser simulator (`--simulate` on dev/start) as a client of the harness pipeline; §16 posture tested per rejection path (loopback + ephemeral port, token required on the WS handshake, Origin validated, forged Host 403s, self-contained page, server-rendered PNGs only)
+- ✅ `rendered`-event sequencing: the agent processes commands strictly sequentially — each command's effects drain (settled) and are acknowledged before the next stdin line is read; `rendered` fires only on actual pixel change, everything else acks with `state`. settled() stays quiescence-based (2 idle macrotask checks); event-precise commit hooks were not needed for a deterministic scripted session
+- ✅ Acceptance: `harness/protocol.test.ts` scripted session passes (ready → press → rendered → snapshot → reconcile, malformed-input errors, writeFrames, EOF exit 0); example's test passes with mocked `osascript`
 
 ## M4 — Polish ⬜
 

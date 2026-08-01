@@ -140,3 +140,37 @@ within 30 ms of the same key's release; releases are never dropped, so
 pressed-state cannot wedge, and a suppressed bounce leaves state consistent.
 Runs on the injectable clock; M3's frozen-time `tap` must advance the clock
 between deliberate back-to-back taps.
+
+## `--simulate` is a boolean flag; the model rides on `--model`
+
+SPEC §9 sketches `--simulate [model]`, but `util.parseArgs` (the mandated arg
+parser, §2) has no optional-value options. The CLI takes
+`--simulate [--model M]` instead — same information, no hand-rolled parsing.
+Model precedence for the simulator is unchanged (§8): `--model` flag >
+`config.model` > mk2.
+
+## Unmatched mock-exec commands resolve, loudly
+
+With `--mock-exec`, exec() never falls through to a real `Bun.spawn`: an
+unmatched command resolves `{ exitCode: 127 }` (shell convention, matches the
+missing-binary path) and reports through `onUnmatched` → the agent emits an
+`error` event naming the command; the testing helper collects them in
+`deck.unmatchedExecs`. Agents see gaps instead of hangs (§11.3), and a test
+can assert its mock table is complete.
+
+## Agent acknowledgment scheme (§11.2 "every command is acknowledged")
+
+Commands run strictly sequentially; after each one the harness drains
+(settled()) and acks: `rendered` when pixels actually changed (it doubles as
+the ack), `state` otherwise, `frames` for writeFrames, `exit` for exit, and
+`error` for anything malformed. `rendered` manifests are built at emit time
+inside the flush loop, so ordering is deterministic without event-precise
+commit hooks — settled()'s quiescence polling proved sufficient for scripted
+sessions once command processing was serialized.
+
+## Bun 1.3.11: don't ws.close() before server.stop(true)
+
+Calling ServerWebSocket.close() (graceful handshake) and then awaiting
+`server.stop(true)` deadlocks — the stop promise never resolves once a close
+handshake is in flight. The simulator's stop() lets `stop(true)` force-close
+open sockets itself.

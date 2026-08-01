@@ -103,6 +103,7 @@ export class DeckController {
   #pressListeners = new Set<() => void>()
   #lastInputAt = new Map<number, number>()
   #lastReleaseAt = new Map<number, number>()
+  #handlerErrorListeners = new Set<(position: number, handler: string, error: unknown) => void>()
   #longPressTimers = new Map<number, number>()
   #longPressFired = new Set<number>()
 
@@ -514,16 +515,34 @@ export class DeckController {
     this.#longPressFired.delete(position)
   }
 
+  /**
+   * Handler failures (thrown or rejected onPress/onLongPress) go to listeners
+   * when any are registered — the agent harness turns them into structured
+   * error events — and to stderr otherwise (§10).
+   */
+  onHandlerError(listener: (position: number, handler: string, error: unknown) => void): () => void {
+    this.#handlerErrorListeners.add(listener)
+    return () => this.#handlerErrorListeners.delete(listener)
+  }
+
+  #reportHandlerError(position: number, name: string, error: unknown): void {
+    if (this.#handlerErrorListeners.size > 0) {
+      for (const listener of [...this.#handlerErrorListeners]) listener(position, name, error)
+      return
+    }
+    console.error(`[inkdeck] [key ${position}] ${name} failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+  }
+
   #invokeHandler(position: number, name: string, handler: () => void | Promise<void>): void {
     try {
       const result = handler()
       if (result && typeof (result as Promise<void>).then === 'function') {
         void (result as Promise<void>).catch((error) => {
-          console.error(`[inkdeck] [key ${position}] ${name} failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+          this.#reportHandlerError(position, name, error)
         })
       }
     } catch (error) {
-      console.error(`[inkdeck] [key ${position}] ${name} failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+      this.#reportHandlerError(position, name, error)
     }
   }
 
