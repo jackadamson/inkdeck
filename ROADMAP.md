@@ -57,12 +57,13 @@ Status legend: ✅ done · 🔨 in progress · ⬜ not started · ⏸ blocked (r
 - ✅ `rendered`-event sequencing: the agent processes commands strictly sequentially — each command's effects drain (settled) and are acknowledged before the next stdin line is read; `rendered` fires only on actual pixel change, everything else acks with `state`. settled() stays quiescence-based (2 idle macrotask checks); event-precise commit hooks were not needed for a deterministic scripted session
 - ✅ Acceptance: `harness/protocol.test.ts` scripted session passes (ready → press → rendered → snapshot → reconcile, malformed-input errors, writeFrames, EOF exit 0); example's test passes with mocked `osascript`
 
-## M4 — Polish ⬜
+## M4 — Polish ✅
 
-- ⬜ `dev` hot reload without flicker (keep transport handle alive; only dirty keys repaint, changed set logged)
-- ⬜ Scaffold `create-inkdeck` + CLAUDE.md template; `skills/inkdeck/SKILL.md`
-- ⬜ Determinism pass: byte-identical JPEGs across repeated runs **and across machines** (same-machine determinism already tested)
-- ⬜ Debug render metrics to stderr every 10 s (flush/skip/dedup rates, avg/peak render ms)
+- ✅ `dev` hot reload: transport handle stays alive across reloads; only dirty keys repaint and the changed set is logged (`repainted keys [0]` / `no visual change`); watcher observes the **parent directory** (editors save via write-rename, which kills a file-scoped watcher after the first save — found live); unit test proves a re-render with one key changed repaints only that key
+- ✅ Scaffold: `packages/create-inkdeck` (`bun create @jackadamson/inkdeck <dir>`, `inkdeck create <dir>` delegates) — app.tsx/mocks.json/app.test.tsx (the reference app + harness test), package.json (dev/start/check/test/render), tsconfig, .gitignore, README (documents the known-good Tailwind subset, §18.6), CLAUDE.md (agent workflow + full §11.2 protocol reference)
+- ✅ `skills/inkdeck/SKILL.md` — architecture, feedback loop, invariants, patterns
+- ✅ Determinism pass: two fresh processes produce byte-identical PNGs/hashes (`raster/determinism.test.ts`); golden SHA-256s for the reference key (RGBA/JPEG/PNG) committed in `raster/golden.json`, recorded on macOS arm64 — **cross-machine byte-identity still needs a second machine/CI run against those goldens** (a mismatch there is a real finding, not a golden refresh)
+- ✅ Debug render metrics every 10 s with `--debug` (verified on hardware: `metrics(10s): flushes=2 scene-skip=0% dedup=0% render avg=6.0ms peak=9.4ms`)
 
 ## Decisions
 

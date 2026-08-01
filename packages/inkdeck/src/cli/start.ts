@@ -4,6 +4,7 @@
 // is M4.
 
 import { watch } from 'node:fs'
+import { basename, dirname } from 'node:path'
 import { createElement, type ComponentType } from 'react'
 import { hardwareTransport, selectDevice } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
@@ -25,6 +26,12 @@ export interface StartOptions {
 export function watchApp(absPath: string, displayPath: string, controller: DeckController): void {
   let generation = 0
   let reloading = false
+  // Prove only dirty keys repaint (§13 M4): collect the repainted positions
+  // across each reload and log the set.
+  let repainted: number[] = []
+  controller.onRendered((changed) => {
+    repainted.push(...changed)
+  })
   const reload = async () => {
     generation++
     try {
@@ -34,16 +41,27 @@ export function watchApp(absPath: string, displayPath: string, controller: DeckC
         console.error(`[inkdeck] ${displayPath} no longer default-exports a component — keeping the previous render`)
         return
       }
+      repainted = []
       controller.render(createElement(App))
       await controller.settled()
-      console.error(`[inkdeck] reloaded ${displayPath}`)
+      const changedSet = [...new Set(repainted)].sort((a, b) => a - b)
+      console.error(
+        changedSet.length > 0
+          ? `[inkdeck] reloaded ${displayPath} — repainted keys [${changedSet.join(', ')}]`
+          : `[inkdeck] reloaded ${displayPath} — no visual change`,
+      )
     } catch (error) {
       console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
     } finally {
       reloading = false
     }
   }
-  watch(absPath, () => {
+  // Watch the parent directory, not the file: editors (and sed -i) save via
+  // write-to-temp + rename, which replaces the inode and silently kills a
+  // file-scoped watcher after the first save.
+  const base = basename(absPath)
+  watch(dirname(absPath), (_event, filename) => {
+    if (filename && filename !== base) return
     if (reloading) return
     reloading = true
     // Debounce editor save bursts (write + rename events).

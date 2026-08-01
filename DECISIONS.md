@@ -174,3 +174,29 @@ Calling ServerWebSocket.close() (graceful handshake) and then awaiting
 `server.stop(true)` deadlocks — the stop promise never resolves once a close
 handshake is in flight. The simulator's stop() lets `stop(true)` force-close
 open sockets itself.
+
+## Hot-reload watches the parent directory, not the file
+
+Editors (and `sed -i`) save via write-to-temp + rename, which replaces the
+inode and silently kills a file-scoped `fs.watch` after the first save —
+observed live: the second edit stopped triggering reloads. `watchApp` watches
+`dirname(app)` and filters events to the app's basename.
+
+## Cross-machine determinism gate is a committed golden
+
+`raster/golden.json` holds SHA-256 hashes (RGBA, JPEG, PNG) of the reference
+app's key 0 in its deterministic frozen-time state, recorded on macOS arm64
+with the pinned Bun/takumi/sharp. `determinism.test.ts` compares against it
+on every run; a second machine running the suite IS the cross-machine test.
+A mismatch means a nondeterminism leak or a prebuild difference — investigate
+before regenerating (`INKDECK_UPDATE_GOLDEN=1`).
+
+## Scaffold stays out of inkdeck's dependency tree
+
+§2's list is exhaustive, so `inkdeck create` resolves
+`@jackadamson/create-inkdeck` dynamically (installed package, then the
+monorepo sibling) and otherwise prints the `bun create` command. Template
+files that npm or tooling would mangle ship with a `.tmpl` suffix
+(`package.json.tmpl`, `gitignore.tmpl`, `tsconfig.json.tmpl`,
+`app.test.tsx.tmpl` — the last so the repo's own `bun test` doesn't execute
+the template), renamed on copy.

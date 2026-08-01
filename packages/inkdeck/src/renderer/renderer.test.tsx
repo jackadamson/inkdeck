@@ -256,6 +256,33 @@ describe('headless renderer', () => {
     await controller.shutdown()
   })
 
+  test('re-render repaints only the keys whose pixels changed (M4 hot-reload contract)', async () => {
+    const app = (label: string) => (
+      <Deck>
+        <Key position={0}>
+          <span className="text-white">stable</span>
+        </Key>
+        <Key position={1}>
+          <span className="text-white">{label}</span>
+        </Key>
+      </Deck>
+    )
+    const { controller } = await mount(app('one'))
+    const repainted: number[] = []
+    controller.onRendered((changed) => repainted.push(...changed))
+
+    // Same content ⇒ scene hashes match ⇒ nothing repaints.
+    controller.render(app('one'))
+    await controller.settled()
+    expect(repainted).toEqual([])
+
+    // One key's content changes ⇒ only that key repaints.
+    controller.render(app('two'))
+    await controller.settled()
+    expect(repainted).toEqual([1])
+    await controller.shutdown()
+  })
+
   test('contact bounce is debounced: re-press within the window is dropped, releases never are', async () => {
     const clock = new FrozenClock()
     let presses = 0

@@ -1,0 +1,17 @@
+{
+  "mocks": [
+    {
+      "match": "osascript -e input volume of (get volume settings)",
+      "stdout": "75\n",
+      "stderr": "",
+      "exitCode": 0
+    },
+    {
+      "match": "^osascript -e set volume input volume \\d+$",
+      "regex": true,
+      "stdout": "",
+      "stderr": "",
+      "exitCode": 0
+    }
+  ]
+}

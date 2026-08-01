@@ -1,0 +1,21 @@
+{
+  "name": "my-inkdeck-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "inkdeck dev app.tsx",
+    "start": "inkdeck start app.tsx",
+    "check": "inkdeck check app.tsx",
+    "test": "bun test",
+    "render": "inkdeck render app.tsx --out ./frames --model mk2"
+  },
+  "dependencies": {
+    "@jackadamson/inkdeck": "^0.0.1",
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@types/react": "^19.1.0",
+    "typescript": "^5.8.0"
+  }
+}

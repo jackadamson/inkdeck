@@ -11,6 +11,7 @@ const USAGE = `Usage:
   inkdeck start <app.tsx> [--device S] [--simulate [--model M]]  run once, no watch
   inkdeck agent <app.tsx> [--model M] [--freeze-time] [--mock-exec F]
                                                    JSON-lines harness (SPEC §11.2)
+  inkdeck create <dir>                             scaffold a new app
 `
 
 async function main(): Promise<number> {
@@ -108,9 +109,30 @@ async function main(): Promise<number> {
       })
     }
 
-    case 'create':
-      console.error(`[inkdeck] "${command}" is not implemented yet — it lands in a later milestone (see ROADMAP.md).`)
+    case 'create': {
+      const { positionals } = parseArgs({ args: rest, options: {}, allowPositionals: true })
+      const dir = positionals[0]
+      if (!dir) {
+        console.error('[inkdeck] create requires <dir>')
+        return 1
+      }
+      // The scaffold lives in @jackadamson/create-inkdeck (§2 keeps it out of
+      // this package's dependency tree). Try the installed package, then the
+      // monorepo sibling; otherwise point at bun create.
+      const candidates = ['@jackadamson/create-inkdeck', '../../../create-inkdeck/index.ts']
+      for (const specifier of candidates) {
+        let mod: { createProject: (dir: string) => Promise<void> }
+        try {
+          mod = await import(specifier)
+        } catch {
+          continue
+        }
+        await mod.createProject(dir)
+        return 0
+      }
+      console.error(`[inkdeck] the scaffold package is not installed — run: bun create @jackadamson/inkdeck ${dir}`)
       return 1
+    }
 
     case undefined:
     case 'help':

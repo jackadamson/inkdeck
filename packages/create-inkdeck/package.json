@@ -1,0 +1,17 @@
+{
+  "name": "@jackadamson/create-inkdeck",
+  "version": "0.0.1",
+  "description": "Scaffold an inkdeck app — React on an Elgato Stream Deck",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "create-inkdeck": "index.ts"
+  },
+  "files": [
+    "index.ts",
+    "templates"
+  ],
+  "engines": {
+    "bun": "1.3.11"
+  }
+}

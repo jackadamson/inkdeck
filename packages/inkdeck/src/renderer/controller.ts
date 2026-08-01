@@ -37,6 +37,7 @@ const INPUT_PRIORITY_WINDOW_MS = 500
 // releases are never dropped, so pressed-state cannot wedge. Runs on the
 // injectable clock (M3's frozen-time taps must advance past it between taps).
 const KEY_DEBOUNCE_MS = 30
+const METRICS_WINDOW_MS = 10_000
 
 export interface DeckInfo {
   model: string
@@ -112,6 +113,12 @@ export class DeckController {
   #warnedPositions = new Set<number>()
   #closed = false
 
+  // Debug render metrics (§6.2): counted per 10 s window, logged to stderr so
+  // performance regressions are visible as text an agent loop can read.
+  #debug: boolean
+  #metricsTimer: number | null = null
+  #metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0, renders: 0 }
+
   constructor(options: ControllerOptions) {
     this.model = options.model
     this.clock = options.clock ?? new SystemClock()
@@ -142,6 +149,23 @@ export class DeckController {
     )
 
     this.#handle.onInput((report) => this.#onInputReport(report))
+
+    this.#debug = options.debug ?? false
+    if (this.#debug) {
+      this.#metricsTimer = this.clock.setInterval(() => this.#logMetrics(), METRICS_WINDOW_MS)
+    }
+  }
+
+  #logMetrics(): void {
+    const m = this.#metrics
+    const considered = m.flushes + m.sceneSkips + m.dedupSkips
+    if (considered === 0) return // quiet window — nothing to report
+    const pct = (n: number) => `${Math.round((n / considered) * 100)}%`
+    const avg = m.renders > 0 ? (m.renderMsTotal / m.renders).toFixed(1) : '0'
+    console.error(
+      `[inkdeck] metrics(10s): flushes=${m.flushes} scene-skip=${pct(m.sceneSkips)} dedup=${pct(m.dedupSkips)} render avg=${avg}ms peak=${m.renderMsPeak.toFixed(1)}ms`,
+    )
+    this.#metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0, renders: 0 }
   }
 
   get keyCount(): number {
@@ -349,6 +373,8 @@ export class DeckController {
       // Scene hash unchanged ⇒ no raster work for that key (§6.2 step 1).
       if (!prev || prev.sceneHash !== hash) {
         this.#scheduleRaster(position, scene)
+      } else {
+        this.#metrics.sceneSkips++
       }
     }
   }
@@ -440,11 +466,15 @@ export class DeckController {
   }
 
   async #rasterAndPush(position: number, scene: SceneNode | null): Promise<boolean> {
+    const started = performance.now()
     const rgba = await this.raster.renderScene(scene, this.model)
     const rgbaHash = Bun.hash(rgba).toString(16)
     const entry = this.#keys.get(position)
     // Output dedup: identical pixels ⇒ skip encoding and the HID write (§6.2 step 2).
-    if (entry?.rgbaHash === rgbaHash) return false
+    if (entry?.rgbaHash === rgbaHash) {
+      this.#metrics.dedupSkips++
+      return false
+    }
     if (entry) {
       entry.rgba = rgba
       entry.rgbaHash = rgbaHash
@@ -453,6 +483,11 @@ export class DeckController {
     for (const packet of encodeKeyImagePackets(this.model, position, jpeg)) {
       await this.#handle.writeOutput(packet)
     }
+    const elapsed = performance.now() - started
+    this.#metrics.flushes++
+    this.#metrics.renders++
+    this.#metrics.renderMsTotal += elapsed
+    this.#metrics.renderMsPeak = Math.max(this.#metrics.renderMsPeak, elapsed)
     return true
   }
 
@@ -552,6 +587,7 @@ export class DeckController {
   async shutdown(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    if (this.#metricsTimer !== null) this.clock.clearInterval(this.#metricsTimer)
     reconciler.updateContainer(null, this.#fiberRoot, null, null)
     try {
       await this.#handle.sendFeature(encodeReset())
