@@ -10,7 +10,7 @@ import {
   FEATURE_REPORT_LENGTH,
   IMAGE_HEADER_LENGTH,
 } from '../device/protocol.js'
-import type { DeviceInfo, Transport, TransportHandle } from './iface.js'
+import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
 
 export class VirtualTransport implements Transport {
   readonly model: Model
@@ -64,6 +64,8 @@ export class VirtualHandle implements TransportHandle {
 
   #pending = new Map<number, PendingImage>()
   #inputCbs: Array<(report: Uint8Array) => void> = []
+  #disconnectCbs: Array<() => void> = []
+  #disconnected = false
   #keyStates: boolean[]
 
   constructor(model: Model) {
@@ -141,6 +143,17 @@ export class VirtualHandle implements TransportHandle {
     this.#inputCbs.push(cb)
   }
 
+  onDisconnect(cb: () => void): void {
+    this.#disconnectCbs.push(cb)
+  }
+
+  /** Simulate the physical device going away (tests, harness). */
+  simulateDisconnect(): void {
+    if (this.#disconnected || this.closed) return
+    this.#disconnected = true
+    for (const cb of [...this.#disconnectCbs]) cb()
+  }
+
   async close(): Promise<void> {
     this.closed = true
   }
@@ -170,6 +183,7 @@ export class VirtualHandle implements TransportHandle {
   }
 
   #assertOpen(): void {
+    if (this.#disconnected) throw new DeviceDisconnectedError()
     if (this.closed) throw new Error('[inkdeck] VirtualTransport: handle is closed')
   }
 }

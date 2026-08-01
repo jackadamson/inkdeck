@@ -73,6 +73,10 @@ excluded from v1 render targets, `typescript` resolution strategy for `check`,
 press semantics, commit-error surfacing, `exec` 127 semantics, CF data-symbol
 binding via dlsym.
 
+## Post-M4 hardening
+
+- ✅ Unplug/replug resilience (2026-08-01): `onDisconnect` on the transport handle (+ `DeviceDisconnectedError`), controller detach state + `replaceHandle` full repaint, `start`/`dev` wait for the device at startup and reconnect on unplug. Removal is detected by polling the run-loop-scheduled IOHIDManager's device set — the device-level removal callback never fires on macOS 15.6/arm64 (see DECISIONS.md). Verified live on the XL, plus headless tests via `VirtualHandle.simulateDisconnect()`.
+
 ## Known gaps / risks
 
 - Hardware verification covers the **XL only** — MK.2/V2/Neo share the gen-2 protocol and should Just Work, but their product IDs/geometry are still transcription-only.

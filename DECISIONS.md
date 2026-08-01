@@ -200,3 +200,36 @@ files that npm or tooling would mangle ship with a `.tmpl` suffix
 (`package.json.tmpl`, `gitignore.tmpl`, `tsconfig.json.tmpl`,
 `app.test.tsx.tmpl` — the last so the repo's own `bun test` doesn't execute
 the template), renamed on copy.
+
+## onDisconnect is the sixth TransportHandle operation
+
+§4.1 says the five-op handle surface must not grow, but device removal is a
+transport-level event that cannot be synthesized above the seam — without it,
+an unplug is only discoverable as a flood of failed writes (the exact bug
+that motivated this). Handle ops after disconnection throw the typed
+DeviceDisconnectedError so callers classify "device gone" separately from
+per-report failures. VirtualTransport gets simulateDisconnect() so the whole
+story tests headlessly.
+
+## Removal detection: manager polling, not the device removal callback
+
+IOHIDDeviceRegisterRemovalCallback is registered but was observed to never
+fire (macOS 15.6/arm64, Bun 1.3.11, callback verified against a live
+unplug). What does work: scheduling the IOHIDManager on the run loop —
+without which its device set is frozen at open time and hot-plugged decks
+are invisible to CopyDevices — and polling that set every 1 s while handles
+are open; a tracked serial vanishing marks the handle removed. The dead
+callback registration stays as belt-and-braces; markRemoved() dedupes.
+
+## start and dev are session-keeping: wait at startup, reconnect on unplug
+
+"Run once, no watch" (§9) means no file watching, not no persistence. start
+is what people put in launchd, so exiting on unplug would outsource a
+restart loop to every user and break login-order races. Both commands wait
+for the device at startup (announced once, polled 1 s), survive unplugs
+(one log line; rendering continues detached; React state preserved), and on
+replug reattach via controller.replaceHandle() — reset + brightness resent,
+every key repainted from its cached scene. Ambiguity still fails fast:
+multiple decks with no --device is an error, and non-device failures exit
+non-zero as before. Verified live on the XL: unplug → one line; replug →
+tile back with state intact.

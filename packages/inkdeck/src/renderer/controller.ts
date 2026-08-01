@@ -11,7 +11,7 @@ import {
   encodeReset,
   parseInputReport,
 } from '../device/protocol.js'
-import type { TransportHandle } from '../transport/iface.js'
+import { DeviceDisconnectedError, type TransportHandle } from '../transport/iface.js'
 import { RasterEngine } from '../raster/takumi.js'
 import { collectText, sceneHash, type SceneElement, type SceneNode } from '../raster/scene.js'
 import type { Clock } from './clock.js'
@@ -38,6 +38,8 @@ const INPUT_PRIORITY_WINDOW_MS = 500
 // injectable clock (M3's frozen-time taps must advance past it between taps).
 const KEY_DEBOUNCE_MS = 30
 const METRICS_WINDOW_MS = 10_000
+// Long enough for the transport's removal polling (1 s) to flag an unplug.
+const DISCONNECT_GRACE_MS = 1200
 
 export interface DeckInfo {
   model: string
@@ -112,10 +114,13 @@ export class DeckController {
   #brightnessListeners = new Set<() => void>()
   #warnedPositions = new Set<number>()
   #closed = false
+  // Device unplugged: rendering state stays alive, pushes stop, one event
+  // fires — the CLI decides whether to wait for a replug (start/dev do).
+  #detached = false
+  #deviceLostListeners = new Set<() => void>()
 
   // Debug render metrics (§6.2): counted per 10 s window, logged to stderr so
   // performance regressions are visible as text an agent loop can read.
-  #debug: boolean
   #metricsTimer: number | null = null
   #metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0, renders: 0 }
 
@@ -148,10 +153,9 @@ export class DeckController {
       null,
     )
 
-    this.#handle.onInput((report) => this.#onInputReport(report))
+    this.#attachHandle(this.#handle)
 
-    this.#debug = options.debug ?? false
-    if (this.#debug) {
+    if (options.debug) {
       this.#metricsTimer = this.clock.setInterval(() => this.#logMetrics(), METRICS_WINDOW_MS)
     }
   }
@@ -186,6 +190,53 @@ export class DeckController {
     // Reset on startup (§5.2) so stale images from a previous process clear.
     await this.#handle.sendFeature(encodeReset())
     await this.#handle.sendFeature(encodeBrightness(this.#brightness))
+  }
+
+  // ---- device lifecycle (unplug / replug) ----
+
+  get detached(): boolean {
+    return this.#detached
+  }
+
+  /** Fires once per unplug. Pair with replaceHandle() after a replug. */
+  onDeviceLost(listener: () => void): () => void {
+    this.#deviceLostListeners.add(listener)
+    return () => this.#deviceLostListeners.delete(listener)
+  }
+
+  #attachHandle(handle: TransportHandle): void {
+    handle.onInput((report) => {
+      if (handle !== this.#handle) return // stale handle after a replug
+      this.#onInputReport(report)
+    })
+    handle.onDisconnect(() => {
+      if (handle !== this.#handle) return
+      this.#onDeviceRemoved()
+    })
+  }
+
+  #onDeviceRemoved(): void {
+    if (this.#closed || this.#detached) return
+    this.#detached = true
+    this.#pendingRaster.clear() // replaceHandle repaints everything anyway
+    for (const listener of [...this.#deviceLostListeners]) listener()
+  }
+
+  /**
+   * Reattach after a replug: close the old handle, wire the new one, resend
+   * reset + brightness, and repaint every mounted key from its cached scene.
+   */
+  async replaceHandle(handle: TransportHandle): Promise<void> {
+    if (this.#closed) throw new Error('[inkdeck] controller is shut down')
+    await this.#handle.close().catch(() => {})
+    this.#handle = handle
+    this.#attachHandle(handle)
+    this.#detached = false
+    await this.start()
+    for (const [position, entry] of this.#keys) {
+      entry.rgbaHash = null // force the push past output dedup
+      this.#scheduleRaster(position, entry.scene)
+    }
   }
 
   /** Render the app element. Errors surface through settled(). */
@@ -249,9 +300,13 @@ export class DeckController {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)))
     if (clamped === this.#brightness) return
     this.#brightness = clamped
-    void this.#handle.sendFeature(encodeBrightness(clamped)).catch((error) => {
-      console.error(`[inkdeck] failed to set brightness: ${error}`)
-    })
+    // While detached only the state updates; replaceHandle resends it.
+    if (!this.#detached) {
+      void this.#handle.sendFeature(encodeBrightness(clamped)).catch((error) => {
+        if (error instanceof DeviceDisconnectedError) return
+        console.error(`[inkdeck] failed to set brightness: ${error}`)
+      })
+    }
     for (const listener of this.#brightnessListeners) listener()
   }
 
@@ -421,6 +476,7 @@ export class DeckController {
 
   #scheduleRaster(position: number, scene: SceneNode | null): void {
     if (this.#closed) return // shutdown unmount clears via reset instead
+    if (this.#detached) return // scenes stay cached; replaceHandle repaints all
     // Coalesced: three commits while a JPEG is in flight ⇒ only the newest
     // scene renders (§6.2 step 3).
     this.#pendingRaster.set(position, { scene })
@@ -432,7 +488,7 @@ export class DeckController {
     this.#flushing = true
     const changed: number[] = []
     try {
-      while (this.#pendingRaster.size > 0 && !this.#closed) {
+      while (this.#pendingRaster.size > 0 && !this.#closed && !this.#detached) {
         const position = this.#nextFlushPosition()
         const { scene } = this.#pendingRaster.get(position)!
         this.#pendingRaster.delete(position)
@@ -440,6 +496,20 @@ export class DeckController {
           const didChange = await this.#rasterAndPush(position, scene)
           if (didChange) changed.push(position)
         } catch (error) {
+          if (error instanceof DeviceDisconnectedError || this.#detached) {
+            this.#pendingRaster.clear() // unplugged mid-flush: one event, no per-key flood
+            break
+          }
+          // A failed device write may be an unplug the transport has not
+          // flagged yet (removal detection polls, §DECISIONS): give detection
+          // one cycle before treating it as a real per-key failure.
+          if (error instanceof Error && error.message.includes('IOHIDDeviceSetReport')) {
+            await new Promise((resolve) => setTimeout(resolve, DISCONNECT_GRACE_MS))
+            if (this.#detached) {
+              this.#pendingRaster.clear()
+              break
+            }
+          }
           console.error(`[inkdeck] [key ${position}] raster/push failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
         }
       }

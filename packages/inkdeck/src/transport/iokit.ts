@@ -9,7 +9,7 @@
 
 import { dlopen, FFIType, JSCallback, ptr, toArrayBuffer, type Pointer } from 'bun:ffi'
 import { modelByProductId, VENDOR_ID } from '../device/models.js'
-import type { DeviceInfo, Transport, TransportHandle } from './iface.js'
+import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
 import {
   bufPtr,
   CF_NULL,
@@ -44,6 +44,10 @@ function openIOKit() {
     IOHIDManagerSetDeviceMatching: { args: [FFIType.u64, FFIType.u64], returns: FFIType.void },
     IOHIDManagerOpen: { args: [FFIType.u64, FFIType.u32], returns: FFIType.i32 },
     IOHIDManagerCopyDevices: { args: [FFIType.u64], returns: FFIType.u64 },
+    IOHIDManagerScheduleWithRunLoop: {
+      args: [FFIType.u64, FFIType.u64, FFIType.u64],
+      returns: FFIType.void,
+    },
     IOHIDDeviceOpen: { args: [FFIType.u64, FFIType.u32], returns: FFIType.i32 },
     IOHIDDeviceClose: { args: [FFIType.u64, FFIType.u32], returns: FFIType.i32 },
     IOHIDDeviceGetProperty: { args: [FFIType.u64, FFIType.u64], returns: FFIType.u64 },
@@ -60,6 +64,11 @@ function openIOKit() {
     IOHIDDeviceRegisterInputReportCallback: {
       // (device, uint8_t *report, CFIndex reportLength, IOHIDReportCallback, void *context)
       args: [FFIType.u64, FFIType.u64, FFIType.i64, FFIType.u64, FFIType.u64],
+      returns: FFIType.void,
+    },
+    IOHIDDeviceRegisterRemovalCallback: {
+      // (device, IOHIDCallback, void *context)
+      args: [FFIType.u64, FFIType.u64, FFIType.u64],
       returns: FFIType.void,
     },
     IOHIDDeviceScheduleWithRunLoop: {
@@ -108,9 +117,19 @@ function openFailureMessage(serial: string): string {
   return lines.join('\n')
 }
 
+// How often open handles are checked against the manager's device set.
+// Device-level IOHIDDeviceRegisterRemovalCallback is also registered but was
+// observed to never fire (macOS 15.6/arm64, Bun 1.3.11) — the manager's set,
+// drained via the run loop, is the reliable removal signal.
+const REMOVAL_POLL_MS = 1000
+
 export class IOKitTransport implements Transport {
   #manager: CFRef = CF_NULL
+  #runLoopMode: CFRef = CF_NULL
   #devicesBySerial = new Map<string, CFRef>()
+  #openHandles = new Map<string, IOKitHandle>()
+  #removalPoll: ReturnType<typeof setInterval> | null = null
+  #polling = false
 
   #ensureManager(): void {
     if (this.#manager) return
@@ -130,6 +149,10 @@ export class IOKitTransport implements Transport {
     if (rc !== kIOReturnSuccess) {
       throw new Error(`[inkdeck] IOHIDManagerOpen failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
     }
+    // Without run-loop scheduling the manager's device set is frozen at open
+    // time — CopyDevices never sees hot-plugged devices.
+    this.#runLoopMode = cfString('kCFRunLoopDefaultMode')
+    io.IOHIDManagerScheduleWithRunLoop(manager, cfRunLoopGetCurrent(), this.#runLoopMode)
     this.#manager = manager
   }
 
@@ -144,6 +167,12 @@ export class IOKitTransport implements Transport {
   async list(): Promise<DeviceInfo[]> {
     this.#ensureManager()
     const io = iokit()
+    // Drain pending IOKit matching/removal callbacks so hot-plug arrivals and
+    // departures are reflected (kCFRunLoopRunHandledSource = 4, CFRunLoop.h).
+    // When a handle's pump is also running this is redundant but harmless.
+    for (let i = 0; i < 16 && cfRunLoopRunInMode(this.#runLoopMode, 0, true) === 4; i++) {
+      // draining
+    }
     const set = io.IOHIDManagerCopyDevices(this.#manager)
     const devices = set ? cfSetToArray(set) : []
     const infos: DeviceInfo[] = []
@@ -181,18 +210,53 @@ export class IOKitTransport implements Transport {
     if (rc !== kIOReturnSuccess) {
       throw new Error(openFailureMessage(serial))
     }
-    return new IOKitHandle(device)
+    const handle = new IOKitHandle(device)
+    this.#openHandles.set(serial, handle)
+    this.#ensureRemovalPoll()
+    return handle
+  }
+
+  #ensureRemovalPoll(): void {
+    if (this.#removalPoll) return
+    this.#removalPoll = setInterval(() => {
+      if (this.#polling) return
+      this.#polling = true
+      void this.#checkRemovals().finally(() => {
+        this.#polling = false
+      })
+    }, REMOVAL_POLL_MS)
+  }
+
+  async #checkRemovals(): Promise<void> {
+    for (const [serial, handle] of this.#openHandles) {
+      if (handle.isClosed) this.#openHandles.delete(serial)
+    }
+    if (this.#openHandles.size === 0) {
+      if (this.#removalPoll) clearInterval(this.#removalPoll)
+      this.#removalPoll = null
+      return
+    }
+    const present = new Set((await this.list()).map((d) => d.serial))
+    for (const [serial, handle] of this.#openHandles) {
+      if (!present.has(serial)) {
+        this.#openHandles.delete(serial)
+        handle.markRemoved()
+      }
+    }
   }
 }
 
 class IOKitHandle implements TransportHandle {
   #device: CFRef
   #inputCbs: Array<(report: Uint8Array) => void> = []
+  #disconnectCbs: Array<() => void> = []
   #inputBuffer = new Uint8Array(INPUT_BUFFER_SIZE)
   #callback: JSCallback | null = null
+  #removalCallback: JSCallback | null = null
   #pump: ReturnType<typeof setInterval> | null = null
   #runLoopMode: CFRef
   #closed = false
+  #dead = false
 
   constructor(device: CFRef) {
     this.#device = device
@@ -234,12 +298,41 @@ class IOKitHandle implements TransportHandle {
       BigInt(this.#callback.ptr),
       CF_NULL,
     )
+    // Removal callback: the transport-level "device unplugged" signal
+    // (IOHIDCallback: (void *context, IOReturn result, void *sender)).
+    // Delivered by the same run-loop pump as input reports.
+    this.#removalCallback = new JSCallback(
+      (_ctx: Pointer, _result: number, _sender: Pointer) => {
+        this.#onRemoved()
+      },
+      { args: [FFIType.ptr, FFIType.i32, FFIType.ptr], returns: FFIType.void },
+    )
+    if (!this.#removalCallback.ptr) throw new Error('[inkdeck] JSCallback allocation failed')
+    io.IOHIDDeviceRegisterRemovalCallback(this.#device, BigInt(this.#removalCallback.ptr), CF_NULL)
     io.IOHIDDeviceScheduleWithRunLoop(this.#device, cfRunLoopGetCurrent(), this.#runLoopMode)
     // Pump the run loop on an interval. The interval is also the process
     // keep-alive — do not rely on native handles to keep Bun's loop alive (SPEC §4.2).
     this.#pump = setInterval(() => {
       cfRunLoopRunInMode(this.#runLoopMode, 0, true)
     }, RUNLOOP_PUMP_MS)
+  }
+
+  #onRemoved(): void {
+    if (this.#closed || this.#dead) return
+    this.#dead = true
+    // The pump keeps running until close() — it is the process keep-alive and
+    // harmlessly pumps an empty run loop while the caller decides what to do.
+    for (const cb of [...this.#disconnectCbs]) cb()
+  }
+
+  /** Transport-internal: the manager's device set no longer contains this
+   *  device (the working removal signal — see REMOVAL_POLL_MS). */
+  markRemoved(): void {
+    this.#onRemoved()
+  }
+
+  get isClosed(): boolean {
+    return this.#closed
   }
 
   async writeOutput(report: Uint8Array): Promise<void> {
@@ -275,6 +368,7 @@ class IOKitHandle implements TransportHandle {
       )
       if (rc === kIOReturnSuccess) return
       await new Promise((resolve) => setTimeout(resolve, 20))
+      this.#assertOpen() // don't retry against a device that vanished mid-wait
     }
     throw new Error(`[inkdeck] IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
   }
@@ -302,16 +396,22 @@ class IOKitHandle implements TransportHandle {
     this.#inputCbs.push(cb)
   }
 
+  onDisconnect(cb: () => void): void {
+    this.#disconnectCbs.push(cb)
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
     if (this.#pump) clearInterval(this.#pump)
-    iokit().IOHIDDeviceClose(this.#device, kIOHIDOptionsTypeNone)
+    if (!this.#dead) iokit().IOHIDDeviceClose(this.#device, kIOHIDOptionsTypeNone)
     this.#callback?.close()
+    this.#removalCallback?.close()
     cfRelease(this.#runLoopMode)
   }
 
   #assertOpen(): void {
+    if (this.#dead) throw new DeviceDisconnectedError()
     if (this.#closed) throw new Error('[inkdeck] IOKit handle is closed')
   }
 }

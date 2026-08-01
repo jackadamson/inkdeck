@@ -55,6 +55,17 @@ bun packages/inkdeck/src/cli/index.ts dev examples/mic-mute/app.tsx
       keeps running and keeps watching; fixing the file recovers
 - ✅ Ctrl-C exits 0 and resets the deck
 
+## Unplug / replug (verified 2026-08-01)
+
+With `start` (or `dev`) running:
+
+- ✅ unplug the deck → exactly one `[inkdeck] device disconnected` line — no
+      per-key error flood; the process stays alive
+- ✅ replug → `reconnected to <serial> — repainting`; the app's tiles return
+      on their own with React state intact
+- ✅ launching with no deck attached prints `waiting for a Stream Deck…` and
+      picks the device up when it enumerates (autostart-on-login order-proof)
+
 ## Failure UX
 
 - 👤 with the Elgato Stream Deck app running, `open` fails and the error says to

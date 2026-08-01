@@ -1,6 +1,11 @@
 // Transport seam (SPEC §4.1). The renderer must only ever touch the device
 // through this interface — the simulator and agent harness depend on it.
-// Five operations on the handle; do not let the surface grow.
+//
+// §4.1 defines five handle operations and says not to let the surface grow;
+// onDisconnect is the one deliberate addition (recorded in DECISIONS.md):
+// device removal is a transport-level event that cannot be synthesized
+// correctly above this seam, and without it an unplug is only discoverable
+// as a flood of failed writes.
 
 import type { ModelId } from '../device/models.js'
 
@@ -27,5 +32,17 @@ export interface TransportHandle {
   getFeature(reportId: number, length: number): Promise<Uint8Array>
   /** Input reports are delivered with the report ID as the first byte. */
   onInput(cb: (report: Uint8Array) => void): void
+  /** Fires once when the physical device goes away. Reports after this throw
+   *  DeviceDisconnectedError. Never fires for a clean close(). */
+  onDisconnect(cb: () => void): void
   close(): Promise<void>
+}
+
+/** Thrown by handle operations once the device is gone — callers classify it
+ *  as "reconnect or wait", never as a per-report failure worth logging. */
+export class DeviceDisconnectedError extends Error {
+  constructor(message = '[inkdeck] device disconnected') {
+    super(message)
+    this.name = 'DeviceDisconnectedError'
+  }
 }
