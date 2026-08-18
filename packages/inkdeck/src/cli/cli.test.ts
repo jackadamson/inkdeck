@@ -96,4 +96,12 @@ describe('inkdeck CLI', () => {
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('unknown command')
   })
+
+  test('unknown flag exits 1 with a one-line message + usage, no stack trace', async () => {
+    const result = await runCli(['render', 'app.tsx', '--bogus'])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Unknown option '--bogus'")
+    expect(result.stderr).toContain('Usage:')
+    expect(result.stderr).not.toContain('    at ')
+  })
 })

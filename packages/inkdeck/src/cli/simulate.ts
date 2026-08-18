@@ -14,7 +14,7 @@
 //   - Host validated on every request (DNS rebinding)
 //   - UI served from the same origin; no external fetches, no discovery
 
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { Server, ServerWebSocket } from 'bun'
 import type { Model } from '../device/models.js'
 import type { DeckController } from '../renderer/controller.js'
@@ -40,18 +40,20 @@ export function startSimulatorServer(
   model: Model,
 ): SimulatorServer {
   const token = randomBytes(16).toString('hex')
+  const tokenBytes = Buffer.from(token)
+  const tokenMatches = (candidate: string | null): boolean => {
+    if (candidate === null) return false
+    const bytes = Buffer.from(candidate)
+    return bytes.length === tokenBytes.length && timingSafeEqual(bytes, tokenBytes)
+  }
   const sockets = new Set<ServerWebSocket<WsData>>()
 
-  const keyPng = async (position: number): Promise<string | null> => {
-    const snapshot = controller.keySnapshots().find((s) => s.position === position)
-    if (!snapshot?.rgba) return null
-    const png = await controller.raster.rgbaToPng(snapshot.rgba, model)
-    return Buffer.from(png).toString('base64')
-  }
-
-  const sendKey = async (ws: ServerWebSocket<WsData>, position: number): Promise<void> => {
-    const png = await keyPng(position)
-    ws.send(JSON.stringify(png ? { type: 'key', position, png } : { type: 'clear', position }))
+  /** One key's wire message (PNG encoded once; callers broadcast the string). */
+  const keyMessage = async (position: number): Promise<string> => {
+    const rgba = controller.keyRgba(position)
+    if (!rgba) return JSON.stringify({ type: 'clear', position })
+    const png = await controller.raster.rgbaToPng(rgba, model)
+    return JSON.stringify({ type: 'key', position, png: Buffer.from(png).toString('base64') })
   }
 
   const server: Server<WsData> = Bun.serve<WsData>({
@@ -68,14 +70,23 @@ export function startSimulatorServer(
         if (origin !== `http://127.0.0.1:${srv.port}`) {
           return new Response('forbidden: bad origin', { status: 403 })
         }
-        if (url.searchParams.get('token') !== token) {
+        if (!tokenMatches(url.searchParams.get('token'))) {
           return new Response('forbidden: bad token', { status: 403 })
         }
         if (srv.upgrade(req, { data: { authed: true as const } })) return undefined as unknown as Response
         return new Response('upgrade failed', { status: 400 })
       }
       if (url.pathname === '/') {
-        return new Response(pageHtml(), { headers: { 'content-type': 'text/html; charset=utf-8' } })
+        return new Response(pageHtml(), {
+          headers: {
+            'content-type': 'text/html; charset=utf-8',
+            // The page is self-contained: inline script/style, data: images,
+            // one WebSocket back to this origin, never framed (§16).
+            'content-security-policy': `default-src 'none'; img-src data:; connect-src ws://127.0.0.1:${srv.port}; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+            'x-content-type-options': 'nosniff',
+            'referrer-policy': 'no-referrer',
+          },
+        })
       }
       return new Response('not found', { status: 404 })
     },
@@ -92,7 +103,7 @@ export function startSimulatorServer(
         )
         void (async () => {
           for (const snapshot of controller.keySnapshots()) {
-            await sendKey(ws, snapshot.position)
+            ws.send(await keyMessage(snapshot.position))
           }
         })()
       },
@@ -125,8 +136,10 @@ export function startSimulatorServer(
 
   const unrender = controller.onRendered((changed) => {
     void (async () => {
+      // Encode each changed key once per batch and broadcast the same payload.
       for (const position of changed) {
-        for (const ws of sockets) await sendKey(ws, position)
+        const message = await keyMessage(position)
+        for (const ws of sockets) ws.send(message)
       }
     })()
   })
@@ -222,6 +235,7 @@ function pageHtml(): string {
   const deck = document.getElementById('deck')
   const keys = []
   const ws = new WebSocket('ws://' + location.host + '/ws?token=' + encodeURIComponent(token))
+  const applyBrightness = (value) => { deck.style.opacity = String(Math.max(value, 4) / 100) }
   ws.onopen = () => { status.textContent = 'connected' }
   ws.onclose = () => { status.textContent = 'disconnected — restart the simulator and reload' }
   ws.onmessage = (e) => {
@@ -244,12 +258,13 @@ function pageHtml(): string {
         keys.push(img)
       }
       status.textContent = msg.model.id + (msg.serial ? ' · ' + msg.serial : '') + ' · simulated'
+      applyBrightness(msg.brightness)
     } else if (msg.type === 'key' && keys[msg.position]) {
       keys[msg.position].src = 'data:image/png;base64,' + msg.png
     } else if (msg.type === 'clear' && keys[msg.position]) {
       keys[msg.position].removeAttribute('src')
     } else if (msg.type === 'brightness') {
-      deck.style.opacity = String(Math.max(msg.value, 4) / 100)
+      applyBrightness(msg.value)
     }
   }
 </script>

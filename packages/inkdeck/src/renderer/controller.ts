@@ -322,6 +322,11 @@ export class DeckController {
     }
   }
 
+  /** Last rasterized RGBA for one key (null if never rasterized / unmounted). */
+  keyRgba(position: number): Uint8Array | null {
+    return this.#keys.get(position)?.rgba ?? null
+  }
+
   /** Structural + pixel snapshot of every mounted key (manifest source, §11.1). */
   keySnapshots(): KeySnapshot[] {
     const out: KeySnapshot[] = []

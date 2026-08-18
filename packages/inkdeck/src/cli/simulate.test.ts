@@ -65,6 +65,10 @@ describe('browser simulator (§16)', () => {
     // No external resources: the page must be self-contained (§16).
     expect(html).not.toMatch(/src\s*=\s*"http/)
     expect(html).not.toMatch(/href\s*=\s*"http/)
+    const csp = res.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain(`connect-src ws://127.0.0.1:${sim.port}`)
+    expect(csp).toContain("frame-ancestors 'none'")
   })
 
   test('rejects requests with a forged Host header (DNS rebinding)', async () => {
@@ -102,9 +106,13 @@ describe('browser simulator (§16)', () => {
     }
 
     await until(() => messages.some((m) => m.type === 'hello'))
-    const hello = messages.find((m) => m.type === 'hello')! as { model: { columns: number; rows: number } }
+    const hello = messages.find((m) => m.type === 'hello')! as { model: { columns: number; rows: number }; brightness: number }
     expect(hello.model.columns).toBe(5)
     expect(hello.model.rows).toBe(3)
+    expect(hello.brightness).toBe(100)
+    // The page applies hello.brightness on connect (not only on later changes).
+    const html = await (await fetch(`${origin()}/`)).text()
+    expect(html).toContain('applyBrightness(msg.brightness)')
 
     // Initial state push: key 0's server-rendered PNG.
     await until(() => messages.some((m) => m.type === 'key' && m.position === 0))
