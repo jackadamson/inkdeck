@@ -1,6 +1,6 @@
 {
   "name": "@jackadamson/inkdeck",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "React renderer for Elgato Stream Deck \u2014 Ink, but the terminal is a grid of LCD keys",
   "keywords": [
     "stream-deck",
