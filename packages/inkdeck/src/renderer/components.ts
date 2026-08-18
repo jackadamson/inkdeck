@@ -1,12 +1,16 @@
 // Public components (SPEC §7.1). <Deck> and <Key> render internal host
 // elements; content inside a <Key> is ordinary JSX (div/span/p/img/svg).
 
-import { Component, createElement, useMemo, type ReactNode } from 'react'
+import { Component, createElement, useContext, useMemo, type ReactNode } from 'react'
 import { DeckContext } from './context.js'
 import { DECK_TYPE, KEY_ERROR_TYPE, KEY_TYPE } from './hostTree.js'
 
 export interface DeckProps {
-  /** Runtime-reactive panel brightness, 0–100. */
+  /**
+   * Panel brightness, 0–100, applied whenever the value changes. Omitting the
+   * prop (or removing it later) leaves the last applied value in place; the
+   * default at startup is 100.
+   */
   brightness?: number
   children?: ReactNode
 }
@@ -15,30 +19,50 @@ export function Deck(props: DeckProps): ReactNode {
   return createElement(DECK_TYPE, { brightness: props.brightness }, props.children)
 }
 
-export interface KeyProps {
-  /** The physical key slot this element owns (row-major, 0-based). */
-  position: number
-  /** May be async; rejections are caught and logged, never fatal (§10). */
+interface KeyBaseProps {
+  /**
+   * Fires on key-down for instant feel — unless `onLongPress` is also set, in
+   * which case a press is only known to be *short* on release, so onPress
+   * fires on key-up (after the 30 ms contact-bounce window). May be async;
+   * rejections are caught and logged, never fatal (§10).
+   */
   onPress?: () => unknown
+  /** Fires once the key has been held for `longPressMs` (default 500). */
   onLongPress?: () => unknown
   longPressMs?: number
+  /**
+   * Content: div/span/p/img/svg with Tailwind `className` and inline `style`.
+   * Several children directly under <Key> are wrapped in an implicit flex-row
+   * `div`; give them one root element to control layout.
+   */
   children?: ReactNode
 }
 
+/** Address a key by row-major position, or by (row, col) — pick one. */
+export type KeyProps = KeyBaseProps &
+  ({ position: number; row?: never; col?: never } | { row: number; col: number; position?: never })
+
 export function Key(props: KeyProps): ReactNode {
+  const controller = useContext(DeckContext)
+  const position =
+    props.position !== undefined
+      ? props.position
+      : controller
+        ? controller.deckInfo.positionOf(props.row, props.col)
+        : Number.NaN
   // Captured once per mount; used to build the duplicate-position error that
   // shows both component stacks (§7.1).
   const stack = useMemo(() => new Error('<Key> mounted here').stack ?? '(no stack)', [])
   return createElement(
     KEY_TYPE,
     {
-      position: props.position,
+      position,
       onPress: props.onPress,
       onLongPress: props.onLongPress,
       longPressMs: props.longPressMs,
       stack,
     },
-    createElement(KeyBoundary, { position: props.position }, props.children),
+    createElement(KeyBoundary, { position }, props.children),
   )
 }
 

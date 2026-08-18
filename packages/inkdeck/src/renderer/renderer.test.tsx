@@ -47,7 +47,21 @@ describe('headless renderer', () => {
     expect(key0.hasPress).toBe(true)
     expect(key0.hasLongPress).toBe(false)
     expect(key0.hash).toBeTruthy()
-    expect(key0.image).toBe('key-0.png')
+    expect(key0.image).toBeUndefined() // only manifests written next to frames name files
+    await controller.shutdown()
+  })
+
+  test('<Key row col> addresses the same slot as position', async () => {
+    const { controller } = await mount(
+      <Deck>
+        <Key row={1} col={2}>
+          <span className="text-white">rc</span>
+        </Key>
+      </Deck>,
+    )
+    const key = buildManifest(controller).keys[0]!
+    expect(key.position).toBe(7) // mk2: 5 columns ⇒ row 1, col 2
+    expect(key.text).toEqual(['rc'])
     await controller.shutdown()
   })
 

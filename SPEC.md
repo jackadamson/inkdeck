@@ -233,7 +233,7 @@ Thin wrapper over `Bun.spawn`. Exists **only** so the agent harness can intercep
 An app is a file that default-exports a component, with an optional static config export:
 
 ```tsx
-export const config = { model: 'mk2', fonts: ['./NotoSans.ttf'] }   // pre-connection: simulator default model, extra fonts
+export const config = { defaultModel: 'mk2', fonts: ['./NotoSans.ttf'] }   // simulator/headless default model (never constrains hardware), extra fonts
 export default function App() { … }
 ```
 

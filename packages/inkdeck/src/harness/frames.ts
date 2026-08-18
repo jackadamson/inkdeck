@@ -8,7 +8,7 @@ import { buildManifest, type Manifest } from './manifest.js'
 
 export async function writeFrames(controller: DeckController, dir: string): Promise<Manifest> {
   await mkdir(dir, { recursive: true })
-  const manifest = buildManifest(controller)
+  const manifest = buildManifest(controller, { withImages: true })
   for (const snapshot of controller.keySnapshots()) {
     if (!snapshot.rgba) continue
     const png = await controller.raster.rgbaToPng(snapshot.rgba, controller.model)

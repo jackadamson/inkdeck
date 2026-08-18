@@ -6,7 +6,7 @@ import { useCallback, useState } from 'react'
 import { Deck, Key, exec, usePoller } from '@jackadamson/inkdeck'
 import type { InkdeckConfig } from '@jackadamson/inkdeck'
 
-export const config: InkdeckConfig = { model: 'mk2' }
+export const config: InkdeckConfig = { defaultModel: 'mk2' }
 
 const READ_VOLUME = ['osascript', '-e', 'input volume of (get volume settings)']
 const setVolume = (level: number) => ['osascript', '-e', `set volume input volume ${level}`]

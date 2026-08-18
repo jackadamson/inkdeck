@@ -10,7 +10,7 @@ import { useCallback, useRef, useState } from 'react'
 import { Deck, Key, useDeckInfo, useKeyState, usePoller } from '@jackadamson/inkdeck'
 import type { InkdeckConfig } from '@jackadamson/inkdeck'
 
-export const config: InkdeckConfig = { model: 'xl' }
+export const config: InkdeckConfig = { defaultModel: 'xl' }
 
 const TICK_MS = 120 // animation step; ~8 fps keeps full-deck redraws cheap
 const VB = 100 // svg viewBox units per key face

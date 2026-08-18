@@ -6,7 +6,8 @@ import type { DeckController } from '../renderer/controller.js'
 
 export interface KeyManifest {
   position: number
-  image: string
+  /** File name of the key's PNG — present only in manifests written next to frames (render, writeFrames). */
+  image?: string
   hash: string | null
   text: string[]
   error: string | null
@@ -21,7 +22,7 @@ export interface Manifest {
   keys: KeyManifest[]
 }
 
-export function buildManifest(controller: DeckController): Manifest {
+export function buildManifest(controller: DeckController, options: { withImages?: boolean } = {}): Manifest {
   const info = controller.deckInfo
   return {
     model: info.model,
@@ -29,7 +30,7 @@ export function buildManifest(controller: DeckController): Manifest {
     rows: info.rows,
     keys: controller.keySnapshots().map((snapshot) => ({
       position: snapshot.position,
-      image: `key-${snapshot.position}.png`,
+      ...(options.withImages ? { image: `key-${snapshot.position}.png` } : {}),
       hash: snapshot.imageHash,
       text: snapshot.text,
       error: snapshot.error,

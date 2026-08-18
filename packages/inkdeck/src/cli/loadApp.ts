@@ -29,5 +29,5 @@ export async function loadApp(path: string): Promise<LoadedApp> {
 }
 
 export function resolveHeadlessModel(app: LoadedApp, flagModel?: string): Model {
-  return requireRenderableModel(flagModel ?? app.config.model ?? 'mk2')
+  return requireRenderableModel(flagModel ?? app.config.defaultModel ?? 'mk2')
 }
