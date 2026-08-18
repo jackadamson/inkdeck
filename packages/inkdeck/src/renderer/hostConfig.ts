@@ -1,4 +1,4 @@
-// react-reconciler host config (mutation mode) for react-reconciler 0.32 /
+// react-reconciler host config (mutation mode) for react-reconciler 0.33 /
 // React 19. Host elements mutate the HostTree; resetAfterCommit notifies the
 // controller, which diffs per-key scenes.
 
@@ -208,7 +208,7 @@ export const reconciler = ReactReconciler(hostConfig)
 
 /**
  * Force pending passive effects and sync-lane work to run now. Both exist
- * on the 0.32 runtime (flushPassiveEffects/flushSyncWork) but are missing
+ * on the 0.33 runtime (flushPassiveEffects/flushSyncWork) but are missing
  * from the published types, hence the structural cast.
  */
 export function flushReact(): void {
