@@ -44,3 +44,26 @@ export function collectText(scene: SceneNode | null): string[] {
   if (scene) walk(scene)
   return out
 }
+
+/** The minimal fallback error tile painted when a key's boundary trips or its scene cannot be rasterized (SPEC §7.1, §10). */
+export function errorTileScene(): SceneNode {
+  return {
+    kind: 'element',
+    tag: 'div',
+    className: 'flex h-full w-full flex-col items-center justify-center gap-1 bg-[#7f1d1d]',
+    children: [
+      {
+        kind: 'element',
+        tag: 'span',
+        className: 'text-[28px] font-bold text-white',
+        children: [{ kind: 'text', text: '!' }],
+      },
+      {
+        kind: 'element',
+        tag: 'span',
+        className: 'text-[11px] uppercase tracking-wide text-white/80',
+        children: [{ kind: 'text', text: 'error' }],
+      },
+    ],
+  }
+}

@@ -13,7 +13,8 @@ import {
 } from '../device/protocol.js'
 import { DeviceDisconnectedError, type TransportHandle } from '../transport/iface.js'
 import { RasterEngine } from '../raster/takumi.js'
-import { collectText, sceneHash, type SceneElement, type SceneNode } from '../raster/scene.js'
+import { collectText, errorTileScene, sceneHash, type SceneElement, type SceneNode } from '../raster/scene.js'
+import { serializeSvg } from '../raster/svg.js'
 import type { Clock } from './clock.js'
 import { ScopedClock, SystemClock } from './clock.js'
 import { registerExecScope, runInExecScope, type ExecInterceptor, type ExecScope } from './exec.js'
@@ -454,7 +455,7 @@ export class DeckController {
     for (const [position, element] of byPosition) {
       const errorElement = findElements(element.children, KEY_ERROR_TYPE)[0]
       const scene = errorElement
-        ? this.raster.errorTileScene()
+        ? errorTileScene()
         : this.#buildScene(element.children)
       const hash = sceneHash(scene)
       const prev = this.#keys.get(position)
@@ -590,7 +591,7 @@ export class DeckController {
     if (!entry) return false
     entry.error = `raster failed: ${message}`
     try {
-      return await this.#rasterAndPush(position, this.raster.errorTileScene())
+      return await this.#rasterAndPush(position, errorTileScene())
     } catch {
       return false
     }
@@ -702,61 +703,4 @@ export class DeckController {
     }
     await this.#handle.close()
   }
-}
-
-// SVG subtrees are serialized to markup and rasterized by Takumi as an image
-// source — mirrors @takumi-rs/helpers' JSX handling.
-const SVG_CAMEL_ATTRS = new Set([
-  'viewBox',
-  'preserveAspectRatio',
-  'gradientUnits',
-  'gradientTransform',
-  'patternUnits',
-  'patternTransform',
-  'clipPathUnits',
-  'maskUnits',
-  'maskContentUnits',
-  'markerUnits',
-  'refX',
-  'refY',
-  'markerWidth',
-  'markerHeight',
-  'textLength',
-  'lengthAdjust',
-])
-
-function serializeSvg(element: HostElement): string {
-  const attrs: string[] = []
-  for (const [key, value] of Object.entries(element.props)) {
-    if (key === 'children' || value == null || typeof value === 'function') continue
-    let name: string
-    if (key === 'className') name = 'class'
-    else if (key === 'style') {
-      if (typeof value === 'object') {
-        const css = Object.entries(value as Record<string, unknown>)
-          .map(([k, v]) => `${k.replace(/([A-Z])/g, '-$1').toLowerCase()}:${String(v)}`)
-          .join(';')
-        attrs.push(`style="${escapeXml(css)}"`)
-      }
-      continue
-    } else if (SVG_CAMEL_ATTRS.has(key)) name = key
-    else name = key.replace(/([A-Z])/g, '-$1').toLowerCase()
-    attrs.push(`${name}="${escapeXml(String(value))}"`)
-  }
-  if (element.type === 'svg' && !('xmlns' in element.props)) {
-    attrs.push('xmlns="http://www.w3.org/2000/svg"')
-  }
-  const children = element.children
-    .filter((c) => !c.hidden)
-    .map((c) => (c.kind === 'text' ? escapeXml(c.text) : serializeSvg(c)))
-    .join('')
-  return `<${element.type}${attrs.length ? ` ${attrs.join(' ')}` : ''}>${children}</${element.type}>`
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
 }

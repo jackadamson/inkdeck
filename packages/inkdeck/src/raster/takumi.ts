@@ -71,29 +71,6 @@ export class RasterEngine {
     return new Uint8Array(png)
   }
 
-  /** The minimal fallback error tile painted when a key's boundary trips (SPEC §7.1, §10). */
-  errorTileScene(): SceneNode {
-    return {
-      kind: 'element',
-      tag: 'div',
-      className: 'flex h-full w-full flex-col items-center justify-center gap-1 bg-[#7f1d1d]',
-      children: [
-        {
-          kind: 'element',
-          tag: 'span',
-          className: 'text-[28px] font-bold text-white',
-          children: [{ kind: 'text', text: '!' }],
-        },
-        {
-          kind: 'element',
-          tag: 'span',
-          className: 'text-[11px] uppercase tracking-wide text-white/80',
-          children: [{ kind: 'text', text: 'error' }],
-        },
-      ],
-    }
-  }
-
   /**
    * Wrap the key scene in a root container that fills the key, defaults the
    * background to black and text to white/16px Inter. A null scene (no
