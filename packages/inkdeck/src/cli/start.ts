@@ -213,12 +213,16 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
           return
         } catch (error) {
           if (isDeviceError(error)) {
-            console.error(`[inkdeck] reconnect handshake failed (${error instanceof Error ? error.message : error}) — waiting for the deck again`)
+            console.error(
+              `[inkdeck] reconnect handshake failed (${error instanceof Error ? error.message : error}) — waiting for the deck again`,
+            )
             await reopened.close().catch(() => {})
             await sleep(DEVICE_POLL_MS)
             continue
           }
-          console.error(`[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+          console.error(
+            `[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`,
+          )
           await finish(1)
           return
         }

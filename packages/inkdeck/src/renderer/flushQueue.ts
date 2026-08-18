@@ -10,7 +10,7 @@
 
 import type { Model } from '../device/models.js'
 import { encodeKeyImagePackets } from '../device/protocol.js'
-import { RasterEngine } from '../raster/takumi.js'
+import type { RasterEngine } from '../raster/takumi.js'
 import { errorTileScene, type SceneNode } from '../raster/scene.js'
 import { DeviceDisconnectedError, type TransportHandle } from '../transport/iface.js'
 import type { Clock } from './clock.js'

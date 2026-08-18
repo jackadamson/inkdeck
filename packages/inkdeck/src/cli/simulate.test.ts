@@ -20,7 +20,11 @@ beforeAll(async () => {
     element: createElement(
       Deck,
       null,
-      createElement(Key, { position: 0, onPress: () => pressed++ }, createElement('span', { className: 'text-white' }, 'sim')),
+      createElement(
+        Key,
+        { position: 0, onPress: () => pressed++ },
+        createElement('span', { className: 'text-white' }, 'sim'),
+      ),
     ),
   })
   sim = startSimulatorServer(session.controller, session.handle, session.controller.model)
@@ -107,7 +111,10 @@ describe('browser simulator (§16)', () => {
     }
 
     await until(() => messages.some((m) => m.type === 'hello'))
-    const hello = messages.find((m) => m.type === 'hello')! as { model: { columns: number; rows: number }; brightness: number }
+    const hello = messages.find((m) => m.type === 'hello')! as {
+      model: { columns: number; rows: number }
+      brightness: number
+    }
     expect(hello.model.columns).toBe(5)
     expect(hello.model.rows).toBe(3)
     expect(hello.brightness).toBe(100)

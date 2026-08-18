@@ -20,9 +20,7 @@ export async function loadApp(path: string): Promise<LoadedApp> {
   const mod = await import(appPath)
   const App = mod.default
   if (typeof App !== 'function') {
-    throw new Error(
-      `[inkdeck] ${path} must default-export a React component (export default function App() { … })`,
-    )
+    throw new Error(`[inkdeck] ${path} must default-export a React component (export default function App() { … })`)
   }
   const config: InkdeckConfig = mod.config && typeof mod.config === 'object' ? mod.config : {}
   return { App, config, appPath, appDir: dirname(appPath) }

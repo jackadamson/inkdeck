@@ -101,7 +101,13 @@ export class DeckController {
   // Debug render metrics (§6.2): per 10 s window, logged so performance
   // regressions are visible as text an agent loop can read.
   #metricsTimer: number | null = null
-  #metrics: FlushMetrics & { sceneSkips: number } = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 }
+  #metrics: FlushMetrics & { sceneSkips: number } = {
+    flushes: 0,
+    sceneSkips: 0,
+    dedupSkips: 0,
+    renderMsTotal: 0,
+    renderMsPeak: 0,
+  }
 
   constructor(options: ControllerOptions) {
     this.model = options.model

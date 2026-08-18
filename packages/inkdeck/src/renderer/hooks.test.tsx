@@ -2,7 +2,7 @@
 // refresh(), stable useDeckInfo/useBrightness identities, useKeyState.
 
 import { describe, expect, test } from 'bun:test'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Deck, Key, useBrightness, useDeckInfo, useKeyState, usePoller } from '../index.js'
 import { renderDeck } from '../testing.js'
 

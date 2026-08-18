@@ -65,7 +65,9 @@ export function buildCommitScenes(root: HostRoot, keyCount: number, ctx: SceneBu
     if (key.hidden) continue
     const position = Number(key.props.position)
     if (!Number.isInteger(position) || position < 0) {
-      throw new Error(`[inkdeck] <Key position={${String(key.props.position)}}> — position must be a non-negative integer`)
+      throw new Error(
+        `[inkdeck] <Key position={${String(key.props.position)}}> — position must be a non-negative integer`,
+      )
     }
     const existing = byPosition.get(position)
     if (existing) {

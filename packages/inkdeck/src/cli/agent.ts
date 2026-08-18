@@ -141,35 +141,35 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
   // Commands run strictly sequentially: the next stdin line is not processed
   // until the previous command's effects have drained and been acknowledged.
   void (async () => {
-  for await (const line of console) {
-    if (stopped) break
-    const trimmed = line.trim()
-    if (trimmed.length === 0) continue
-    let parsed: Command
-    try {
-      parsed = JSON.parse(trimmed)
-    } catch {
-      emit({ event: 'error', scope: 'protocol', message: `malformed JSON line: ${trimmed.slice(0, 200)}` })
-      continue
+    for await (const line of console) {
+      if (stopped) break
+      const trimmed = line.trim()
+      if (trimmed.length === 0) continue
+      let parsed: Command
+      try {
+        parsed = JSON.parse(trimmed)
+      } catch {
+        emit({ event: 'error', scope: 'protocol', message: `malformed JSON line: ${trimmed.slice(0, 200)}` })
+        continue
+      }
+      inFlight = parsed && typeof parsed === 'object' && parsed.id !== undefined ? { id: parsed.id } : {}
+      try {
+        await handle(parsed)
+      } catch (error) {
+        emit(
+          tagged({
+            event: 'error',
+            scope: 'protocol',
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        )
+      } finally {
+        inFlight = {}
+      }
     }
-    inFlight = parsed && typeof parsed === 'object' && parsed.id !== undefined ? { id: parsed.id } : {}
-    try {
-      await handle(parsed)
-    } catch (error) {
-      emit(
-        tagged({
-          event: 'error',
-          scope: 'protocol',
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      )
-    } finally {
-      inFlight = {}
-    }
-  }
 
-  // EOF on stdin ⇒ clean exit (§11.2).
-  await finish(0)
+    // EOF on stdin ⇒ clean exit (§11.2).
+    await finish(0)
   })()
 
   return running

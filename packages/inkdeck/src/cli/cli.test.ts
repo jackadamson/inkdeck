@@ -55,13 +55,9 @@ describe('inkdeck CLI', () => {
     const bad = join(dir, 'app.tsx')
     writeFileSync(
       bad,
-      [
-        'export default function App() {',
-        "  const wrong: number = 'not a number'",
-        '  return null',
-        '}',
-        '',
-      ].join('\n'),
+      ['export default function App() {', "  const wrong: number = 'not a number'", '  return null', '}', ''].join(
+        '\n',
+      ),
     )
     const result = await runCli(['check', bad])
     expect(result.exitCode).toBe(1)
@@ -85,7 +81,12 @@ describe('inkdeck CLI', () => {
       // Empty message (macOS, nothing attached) or the no-transport fallback (Linux).
       expect(out).toMatch(/no stream deck|no devices/)
     } else {
-      expect(result.stdout.trim().split('\n').every((l) => /^\S+\t\S+/.test(l))).toBe(true)
+      expect(
+        result.stdout
+          .trim()
+          .split('\n')
+          .every((l) => /^\S+\t\S+/.test(l)),
+      ).toBe(true)
     }
   })
 

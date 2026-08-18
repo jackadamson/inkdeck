@@ -46,7 +46,7 @@ export async function checkCommand(appPath: string): Promise<number> {
   const ts = await loadTypescript(appDir)
   if (!ts) {
     console.error(
-      '[inkdeck] check: could not resolve the `typescript` package. Add it to your app\'s devDependencies (`bun add -d typescript`) to enable typechecking.',
+      "[inkdeck] check: could not resolve the `typescript` package. Add it to your app's devDependencies (`bun add -d typescript`) to enable typechecking.",
     )
     return 1
   }
@@ -63,12 +63,18 @@ export async function checkCommand(appPath: string): Promise<number> {
     types: ['bun'],
   }
   if (configPath) {
-    const parsed = ts.getParsedCommandLineOfConfigFile(configPath, { noEmit: true }, {
-      ...ts.sys,
-      onUnRecoverableConfigFileDiagnostic: (d) => {
-        console.error(`[inkdeck] check: failed to parse ${configPath}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`)
+    const parsed = ts.getParsedCommandLineOfConfigFile(
+      configPath,
+      { noEmit: true },
+      {
+        ...ts.sys,
+        onUnRecoverableConfigFileDiagnostic: (d) => {
+          console.error(
+            `[inkdeck] check: failed to parse ${configPath}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`,
+          )
+        },
       },
-    })
+    )
     if (parsed) compilerOptions = { ...parsed.options, noEmit: true }
   }
   const program = ts.createProgram([appPath], compilerOptions)
@@ -107,7 +113,9 @@ export async function checkCommand(appPath: string): Promise<number> {
       return 1
     }
   } catch (error) {
-    console.error(`[inkdeck] check: headless render failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    console.error(
+      `[inkdeck] check: headless render failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`,
+    )
     return 1
   }
 

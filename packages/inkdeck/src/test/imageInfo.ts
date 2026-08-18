@@ -29,7 +29,12 @@ export function imageInfo(bytes: Uint8Array): ImageInfo {
         for (let c = 0; c < components; c++) {
           if (bytes[offset + 11 + c * 3] !== 0x11) allOneByOne = false
         }
-        return { format: 'jpeg', width, height, chromaSubsampling: components === 1 || allOneByOne ? '4:4:4' : 'subsampled' }
+        return {
+          format: 'jpeg',
+          width,
+          height,
+          chromaSubsampling: components === 1 || allOneByOne ? '4:4:4' : 'subsampled',
+        }
       }
       offset += 2 + length
     }

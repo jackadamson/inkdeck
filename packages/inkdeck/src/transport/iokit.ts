@@ -7,9 +7,15 @@
 // Property values (ProductID CFNumbers, short serial CFStrings) are exactly
 // the refs that come back tagged.
 
-import { dlopen, FFIType, JSCallback, ptr, toArrayBuffer, type Pointer } from 'bun:ffi'
+import { dlopen, FFIType, JSCallback, toArrayBuffer, type Pointer } from 'bun:ffi'
 import { modelByProductId, VENDOR_ID } from '../device/models.js'
-import { DeviceDisconnectedError, TransportIOError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
+import {
+  DeviceDisconnectedError,
+  TransportIOError,
+  type DeviceInfo,
+  type Transport,
+  type TransportHandle,
+} from './iface.js'
 import {
   bufPtr,
   CF_NULL,
@@ -81,7 +87,9 @@ function openIOKit() {
 
 function iokit() {
   if (process.platform !== 'darwin') {
-    throw new Error('[inkdeck] IOKitTransport is only available on macOS (hardware support for other platforms is post-MVP)')
+    throw new Error(
+      '[inkdeck] IOKitTransport is only available on macOS (hardware support for other platforms is post-MVP)',
+    )
   }
   if (!ioLib) ioLib = openIOKit()
   return ioLib.symbols
@@ -107,9 +115,7 @@ function isElgatoAppRunning(): boolean {
 function openFailureMessage(serial: string): string {
   const lines = [`[inkdeck] failed to open Stream Deck ${serial}.`]
   if (isElgatoAppRunning()) {
-    lines.push(
-      'The Elgato Stream Deck app is running and holds exclusive access to the device — quit it and retry.',
-    )
+    lines.push('The Elgato Stream Deck app is running and holds exclusive access to the device — quit it and retry.')
   } else {
     lines.push(
       'The usual cause is missing Input Monitoring permission: System Settings → Privacy & Security → Input Monitoring, enable it for your terminal, then retry.',
@@ -209,7 +215,9 @@ export class IOKitTransport implements Transport {
     if (!this.#devicesBySerial.has(serial)) await this.list()
     const device = this.#devicesBySerial.get(serial)
     if (!device) {
-      throw new Error(`[inkdeck] no Stream Deck with serial "${serial}" attached — run \`inkdeck list\` to see candidates`)
+      throw new Error(
+        `[inkdeck] no Stream Deck with serial "${serial}" attached — run \`inkdeck list\` to see candidates`,
+      )
     }
     const io = iokit()
     const rc = io.IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone)
@@ -286,7 +294,15 @@ class IOKitHandle implements TransportHandle {
     // The report buffer is a real heap pointer (never tagged), so FFIType.ptr
     // is safe here and is what toArrayBuffer wants.
     this.#callback = new JSCallback(
-      (_ctx: Pointer, _result: number, _sender: Pointer, _type: number, _reportId: number, report: Pointer, length: number | bigint) => {
+      (
+        _ctx: Pointer,
+        _result: number,
+        _sender: Pointer,
+        _type: number,
+        _reportId: number,
+        report: Pointer,
+        length: number | bigint,
+      ) => {
         const len = Number(length)
         if (len <= 0) return
         // For numbered-report devices the IOKit callback buffer already begins

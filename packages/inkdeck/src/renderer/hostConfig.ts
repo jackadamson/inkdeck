@@ -165,7 +165,9 @@ const hostConfig = {
   NotPendingTransition: null,
   // React's public Context type lacks the reconciler's internal fields; the
   // runtime object is the same thing.
-  HostTransitionContext: HostTransitionContext as unknown as Parameters<typeof ReactReconciler>[0]['HostTransitionContext'],
+  HostTransitionContext: HostTransitionContext as unknown as Parameters<
+    typeof ReactReconciler
+  >[0]['HostTransitionContext'],
 
   setCurrentUpdatePriority(newPriority: number): void {
     currentUpdatePriority = newPriority

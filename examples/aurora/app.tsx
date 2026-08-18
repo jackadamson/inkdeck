@@ -114,25 +114,12 @@ function Tile({ position, col, row, t, palette, ripples, cx, cy }: TileProps) {
     <svg viewBox={`0 0 ${VB} ${VB}`} className="h-full w-full">
       <defs>
         {corners.map((c) => (
-          <radialGradient
-            key={c.id}
-            id={`g-${c.id}`}
-            gradientUnits="userSpaceOnUse"
-            cx={c.px}
-            cy={c.py}
-            r={VB * 1.1}
-          >
+          <radialGradient key={c.id} id={`g-${c.id}`} gradientUnits="userSpaceOnUse" cx={c.px} cy={c.py} r={VB * 1.1}>
             <stop offset="0" stopColor={c.color} stopOpacity="0.85" />
             <stop offset="1" stopColor={c.color} stopOpacity="0" />
           </radialGradient>
         ))}
-        <radialGradient
-          id="press"
-          gradientUnits="userSpaceOnUse"
-          cx={VB / 2}
-          cy={VB / 2}
-          r={VB * 0.7}
-        >
+        <radialGradient id="press" gradientUnits="userSpaceOnUse" cx={VB / 2} cy={VB / 2} r={VB * 0.7}>
           <stop offset="0" stopColor="#ffffff" stopOpacity="0.9" />
           <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
         </radialGradient>
@@ -196,10 +183,7 @@ export default function App() {
 
   const splash = useCallback((col: number, row: number) => {
     const born = tickRef.current
-    setRipples((prev) => [
-      ...prev.filter((r) => ((born - r.born) * TICK_MS) / 1000 < RIPPLE_LIFE),
-      { col, row, born },
-    ])
+    setRipples((prev) => [...prev.filter((r) => ((born - r.born) * TICK_MS) / 1000 < RIPPLE_LIFE), { col, row, born }])
   }, [])
 
   const nextPalette = useCallback(() => {
@@ -220,22 +204,8 @@ export default function App() {
         const col = position % columns
         const row = Math.floor(position / columns)
         return (
-          <Key
-            key={position}
-            position={position}
-            onPress={() => splash(col, row)}
-            onLongPress={nextPalette}
-          >
-            <Tile
-              position={position}
-              col={col}
-              row={row}
-              t={t}
-              palette={palette}
-              ripples={live}
-              cx={cx}
-              cy={cy}
-            />
+          <Key key={position} position={position} onPress={() => splash(col, row)} onLongPress={nextPalette}>
+            <Tile position={position} col={col} row={row} t={t} palette={palette} ripples={live} cx={cx} cy={cy} />
           </Key>
         )
       })}

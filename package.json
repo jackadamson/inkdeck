@@ -8,9 +8,14 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "bunx tsc -p packages/inkdeck/tsconfig.json && bunx tsc -p packages/test-fixtures/tsconfig.json && bunx tsc -p examples/aurora/tsconfig.json && bunx tsc -p examples/mic-mute/tsconfig.json",
-    "check:examples": "bun packages/inkdeck/src/cli/index.ts check examples/aurora/app.tsx && bun packages/inkdeck/src/cli/index.ts check examples/mic-mute/app.tsx"
+    "check:examples": "bun packages/inkdeck/src/cli/index.ts check examples/aurora/app.tsx && bun packages/inkdeck/src/cli/index.ts check examples/mic-mute/app.tsx",
+    "lint": "bunx biome check .",
+    "format": "bunx biome format --write ."
   },
   "engines": {
     "bun": "1.3.11"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.9"
   }
 }

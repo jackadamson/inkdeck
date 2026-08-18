@@ -46,7 +46,9 @@ export async function loadMockExecFile(path: string): Promise<MockExecConfig> {
   try {
     raw = await file.json()
   } catch (error) {
-    throw new Error(`[inkdeck] --mock-exec ${path} is not valid JSON: ${error instanceof Error ? error.message : error}`)
+    throw new Error(
+      `[inkdeck] --mock-exec ${path} is not valid JSON: ${error instanceof Error ? error.message : error}`,
+    )
   }
   return normalizeMockExecConfig(raw, path)
 }

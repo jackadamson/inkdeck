@@ -59,7 +59,11 @@ describe('raster pipeline (M0 smoke)', () => {
       mk2,
     )
     const w = mk2.keyW
-    const at = (buf: Uint8Array, x: number, y: number) => [buf[(y * w + x) * 4], buf[(y * w + x) * 4 + 1], buf[(y * w + x) * 4 + 2]]
+    const at = (buf: Uint8Array, x: number, y: number) => [
+      buf[(y * w + x) * 4],
+      buf[(y * w + x) * 4 + 1],
+      buf[(y * w + x) * 4 + 2],
+    ]
     expect(at(rgba, 5, 5)).toEqual([255, 0, 0])
     expect(at(rgba, w - 6, w - 6)).toEqual([0, 0, 0])
     // Decode the JPEG back through Takumi and check the quadrant moved to bottom-right.

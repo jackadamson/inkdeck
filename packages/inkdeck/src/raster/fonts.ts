@@ -10,10 +10,7 @@ const FONT_DIR = join(import.meta.dir, 'assets', 'fonts')
 
 export const DEFAULT_FONT_FAMILY = 'Inter'
 
-export const BUNDLED_FONTS = [
-  join(FONT_DIR, 'Inter-Regular.ttf'),
-  join(FONT_DIR, 'Inter-Bold.ttf'),
-]
+export const BUNDLED_FONTS = [join(FONT_DIR, 'Inter-Regular.ttf'), join(FONT_DIR, 'Inter-Bold.ttf')]
 
 export async function registerBundledFonts(renderer: Renderer): Promise<void> {
   for (const path of BUNDLED_FONTS) {

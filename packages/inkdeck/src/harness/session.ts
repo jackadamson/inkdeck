@@ -134,7 +134,9 @@ export class HarnessSession {
   #assertPosition(position: number): void {
     const keyCount = this.controller.keyCount
     if (!Number.isInteger(position) || position < 0 || position >= keyCount) {
-      throw new Error(`[inkdeck] position ${position} is out of range for ${this.controller.model.id} (0-${keyCount - 1})`)
+      throw new Error(
+        `[inkdeck] position ${position} is out of range for ${this.controller.model.id} (0-${keyCount - 1})`,
+      )
     }
   }
 }

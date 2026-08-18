@@ -88,7 +88,12 @@ export class RasterEngine {
    * lossless and the CSS flip is pixel-exact (verified against libvips'
    * flip+flop: 0 differing bytes at 72² and 96²).
    */
-  async #encodeRgba(rgba: Uint8Array, model: Model, format: 'jpeg' | 'png', transform: string | null): Promise<Uint8Array> {
+  async #encodeRgba(
+    rgba: Uint8Array,
+    model: Model,
+    format: 'jpeg' | 'png',
+    transform: string | null,
+  ): Promise<Uint8Array> {
     await this.#ready
     const { keyW: width, keyH: height } = model
     const node: TakumiNode = {
@@ -146,7 +151,9 @@ export class RasterEngine {
 
     if (el.tag === 'img') {
       if (!el.src) {
-        throw new Error('[inkdeck] <img> requires a src prop — a file path (relative to the app file), an absolute path, or image bytes')
+        throw new Error(
+          '[inkdeck] <img> requires a src prop — a file path (relative to the app file), an absolute path, or image bytes',
+        )
       }
       return { type: 'image', src: el.src, ...meta }
     }

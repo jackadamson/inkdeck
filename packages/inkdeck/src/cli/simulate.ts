@@ -35,11 +35,7 @@ export interface SimulatorServer {
   stop(): Promise<void>
 }
 
-export function startSimulatorServer(
-  controller: DeckController,
-  handle: VirtualHandle,
-  model: Model,
-): SimulatorServer {
+export function startSimulatorServer(controller: DeckController, handle: VirtualHandle, model: Model): SimulatorServer {
   const token = randomBytes(16).toString('hex')
   const tokenBytes = Buffer.from(token)
   const tokenMatches = (candidate: string | null): boolean => {

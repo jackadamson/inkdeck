@@ -76,7 +76,10 @@ describe('dev hot reload', () => {
     const stop = watchApp(app.appPath, 'app.tsx', controller)
     await new Promise((resolve) => setTimeout(resolve, 100)) // watcher warm-up
     writeFileSync(join(dir, 'lib', 'dep.ts'), `export const LABEL = 'two'\n`)
-    await Promise.race([rendered, new Promise((_, reject) => setTimeout(() => reject(new Error('no reload within 5 s')), 5000))])
+    await Promise.race([
+      rendered,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('no reload within 5 s')), 5000)),
+    ])
     await controller.settled()
     expect(buildManifest(controller).keys[0]!.text).toEqual(['two'])
     stop()

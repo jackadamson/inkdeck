@@ -113,7 +113,9 @@ export const MODELS: Model[] = [
   },
 ]
 
-export const RENDERABLE_MODELS: RenderableModelId[] = MODELS.filter((m) => m.renderable).map((m) => m.id as RenderableModelId)
+export const RENDERABLE_MODELS: RenderableModelId[] = MODELS.filter((m) => m.renderable).map(
+  (m) => m.id as RenderableModelId,
+)
 
 export function modelById(id: string): Model | undefined {
   return MODELS.find((m) => m.id === id)

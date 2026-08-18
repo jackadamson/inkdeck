@@ -38,8 +38,9 @@ class AgentClient {
     const decoder = new TextDecoder()
     for await (const chunk of this.proc.stdout as ReadableStream<Uint8Array>) {
       this.#buffer += decoder.decode(chunk, { stream: true })
-      let idx: number
-      while ((idx = this.#buffer.indexOf('\n')) !== -1) {
+      for (;;) {
+        const idx = this.#buffer.indexOf('\n')
+        if (idx === -1) break
         const line = this.#buffer.slice(0, idx)
         this.#buffer = this.#buffer.slice(idx + 1)
         if (line.trim().length === 0) continue

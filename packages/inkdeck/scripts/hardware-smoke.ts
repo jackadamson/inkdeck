@@ -66,7 +66,11 @@ try {
   // getFeature: serial should match what IOKit's device property reported.
   const serialReport = await handle.getFeature(0x06, 32)
   const serial = featureString(serialReport, 2)
-  step('getFeature(0x06) serial matches IOKit property', serial === info.serial, `feature="${serial}" iokit="${info.serial}"`)
+  step(
+    'getFeature(0x06) serial matches IOKit property',
+    serial === info.serial,
+    `feature="${serial}" iokit="${info.serial}"`,
+  )
 
   const fwReport = await handle.getFeature(0x05, 32)
   const firmware = featureString(fwReport, 6)
@@ -95,7 +99,13 @@ try {
   for (let key = 0; key < Math.min(model.columns, colors.length); key++) {
     const { r, g, b } = colors[key]!
     const rgba = await raster.renderScene(
-      { kind: 'element', tag: 'div', className: 'h-full w-full', style: { backgroundColor: `rgb(${r}, ${g}, ${b})` }, children: [] },
+      {
+        kind: 'element',
+        tag: 'div',
+        className: 'h-full w-full',
+        style: { backgroundColor: `rgb(${r}, ${g}, ${b})` },
+        children: [],
+      },
       model,
     )
     const jpeg = await raster.rgbaToJpeg(rgba, model)

@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { DeviceInfo } from '../transport/iface.js'
 import { selectDevice } from './discovery.js'
 
-const dev = (serial: string): DeviceInfo => ({ path: `iokit:${serial}`, vendorId: 0x0fd9, productId: 0x6c, serial, model: 'xl' })
+const dev = (serial: string): DeviceInfo => ({
+  path: `iokit:${serial}`,
+  vendorId: 0x0fd9,
+  productId: 0x6c,
+  serial,
+  model: 'xl',
+})
 
 describe('selectDevice precedence', () => {
   const env = process.env.INKDECK_DEVICE

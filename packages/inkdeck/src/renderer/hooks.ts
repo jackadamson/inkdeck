@@ -58,7 +58,9 @@ export function usePoller(fn: () => unknown, ms: number): Poller {
   latest.current = fn
   const run = useCallback((): void => {
     const report = (error: unknown): void => {
-      controller.logger.error(`[inkdeck] usePoller callback failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+      controller.logger.error(
+        `[inkdeck] usePoller callback failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`,
+      )
     }
     try {
       const result = controller.runInScope(() => latest.current())
