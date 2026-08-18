@@ -265,3 +265,12 @@ XL (aurora + mic-mute text: crisp, correct orientation and colours) on
 2026-08-18 before deletion. The goldens' JPEG/PNG hashes changed with the
 encoder (intentional; the RGBA golden is unchanged, which is the raster
 determinism claim).
+
+## Kept `exec` as the subprocess API name; no `tagName` to Takumi yet
+
+The review suggested renaming `exec` (it takes an argv array, unlike
+`child_process.exec`) and passing `tagName` so Takumi applies `p`/`span`
+semantics. `exec` stays: the array signature is unmistakable at the call
+site and every doc/example/test/scaffold uses it. `tagName` is deferred: it
+would change rendered pixels (default presets/margins) inside 72–96 px keys,
+which is exactly what apps do not want; revisit with the stylesheet feature.

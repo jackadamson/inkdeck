@@ -7,6 +7,7 @@ utilities. Runs on [Bun](https://bun.sh), talks raw USB HID to the deck (no Elga
 and ships a browser simulator plus a headless feedback loop built for coding agents.
 
 ```tsx
+import { useState } from 'react'
 import { Deck, Key, exec, usePoller } from '@jackadamson/inkdeck'
 
 export default function App() {
