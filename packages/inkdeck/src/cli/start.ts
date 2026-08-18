@@ -84,7 +84,7 @@ async function acquireDevice(
  * Reload-on-save for `dev` (hardware and --simulate). Every save re-bundles
  * the app's whole module graph (see devBundle.ts) and re-renders into the
  * live controller, so the transport handle stays open and only keys whose
- * pixels changed repaint (§13 M4). A broken save logs and keeps watching (§10).
+ * pixels changed repaint. A broken save logs and keeps watching (§10).
  */
 export function watchApp(absPath: string, displayPath: string, controller: DeckController): () => void {
   const appDir = dirname(absPath)

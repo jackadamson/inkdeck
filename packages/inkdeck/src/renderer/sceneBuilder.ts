@@ -2,9 +2,23 @@
 // the committed HostTree; the controller diffs and schedules from the result.
 // Validation (one <Deck>, integer positions, no duplicates) lives here too.
 
-import { errorTileScene, type SceneElement, type SceneNode } from '../raster/scene.js'
+import { errorTileScene, type SceneElement, type SceneNode, type SceneTag } from '../raster/scene.js'
 import { serializeSvg } from '../raster/svg.js'
-import { DECK_TYPE, KEY_ERROR_TYPE, KEY_TYPE, findElements, type HostElement, type HostNode, type HostRoot } from './hostTree.js'
+import {
+  CONTENT_TYPES,
+  DECK_TYPE,
+  KEY_ERROR_TYPE,
+  KEY_TYPE,
+  findElements,
+  type HostElement,
+  type HostNode,
+  type HostRoot,
+} from './hostTree.js'
+
+export interface SceneBuildContext {
+  /** Registers <img src={bytes}> with the raster engine; returns the scene src key. */
+  registerInlineImage: (bytes: Uint8Array) => string
+}
 
 export const DEFAULT_LONG_PRESS_MS = 500
 
@@ -29,7 +43,7 @@ export interface CommitScenes {
  * Walk a committed host tree. Throws on structural errors the app must fix
  * (no <Deck> at the root, several <Deck>s, non-integer or duplicate positions).
  */
-export function buildCommitScenes(root: HostRoot, keyCount: number): CommitScenes {
+export function buildCommitScenes(root: HostRoot, keyCount: number, ctx: SceneBuildContext): CommitScenes {
   const decks = findElements(root.children, DECK_TYPE)
   if (decks.length === 0) {
     if (root.children.length > 0) {
@@ -71,7 +85,7 @@ export function buildCommitScenes(root: HostRoot, keyCount: number): CommitScene
   for (const [position, element] of byPosition) {
     const errorElement = findElements(element.children, KEY_ERROR_TYPE)[0]
     keys.set(position, {
-      scene: errorElement ? errorTileScene() : hostToScene(element.children),
+      scene: errorElement ? errorTileScene() : hostToScene(element.children, ctx),
       error: errorElement ? String(errorElement.props.message ?? 'render error') : null,
       onPress: typeof element.props.onPress === 'function' ? (element.props.onPress as () => unknown) : undefined,
       onLongPress:
@@ -83,36 +97,42 @@ export function buildCommitScenes(root: HostRoot, keyCount: number): CommitScene
 }
 
 /** A <Key>'s children as a scene: one root node, or an implicit wrapping div. */
-export function hostToScene(children: HostNode[]): SceneNode | null {
+export function hostToScene(children: HostNode[], ctx: SceneBuildContext): SceneNode | null {
   const nodes = children
     .filter((c) => !c.hidden)
-    .map((c) => nodeToScene(c))
+    .map((c) => nodeToScene(c, ctx))
     .filter((c): c is SceneNode => c !== null)
   if (nodes.length === 0) return null
   if (nodes.length === 1) return nodes[0]!
   return { kind: 'element', tag: 'div', children: nodes }
 }
 
-function nodeToScene(node: HostNode): SceneNode | null {
+function nodeToScene(node: HostNode, ctx: SceneBuildContext): SceneNode | null {
   if (node.kind === 'text') {
     return { kind: 'text', text: node.text }
   }
-  const el: SceneElement = { kind: 'element', tag: node.type, children: [] }
+  if (!CONTENT_TYPES.has(node.type)) {
+    // createInstance already rejects these outside <svg>; svg subtrees never reach here.
+    throw new Error(`[inkdeck] unsupported element <${node.type}> inside a <Key>`)
+  }
+  const el: SceneElement = { kind: 'element', tag: node.type as SceneTag, children: [] }
   const className = node.props.className
   if (typeof className === 'string' && className.length > 0) el.className = className
   const style = node.props.style
   if (style && typeof style === 'object') el.style = style as Record<string, unknown>
-  if (node.type === 'img') {
-    el.src = typeof node.props.src === 'string' ? node.props.src : undefined
+  if (el.tag === 'img') {
+    const src = node.props.src
+    if (typeof src === 'string') el.src = src
+    else if (src instanceof Uint8Array) el.src = ctx.registerInlineImage(src)
     return el
   }
-  if (node.type === 'svg') {
+  if (el.tag === 'svg') {
     el.svg = serializeSvg(node)
     return el
   }
   el.children = node.children
     .filter((c) => !c.hidden)
-    .map((c) => nodeToScene(c))
+    .map((c) => nodeToScene(c, ctx))
     .filter((c): c is SceneNode => c !== null)
   return el
 }

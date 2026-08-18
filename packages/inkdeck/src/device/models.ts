@@ -9,7 +9,8 @@
 //   - packet size:        packages/core/src/services/imageWriter/imageWriter.ts
 //     (StreamdeckDefaultImageWriter MAX_PACKET_SIZE = 1024)
 //
-// NOT yet verified on real hardware — that is the M2 gate (SPEC §13).
+// Verified on real hardware for the XL (M2, see HARDWARE.md); the other gen-2
+// models carry the same protocol per the source above but are unverified.
 
 export type ModelId = 'mk2' | 'xl' | 'mini' | 'plus' | 'neo' | 'original-v2'
 

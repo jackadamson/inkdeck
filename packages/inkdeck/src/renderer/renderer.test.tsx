@@ -113,6 +113,42 @@ describe('headless renderer', () => {
     await controller.shutdown()
   })
 
+  test('a key that threw recovers on the next good render (boundary resets when children change)', async () => {
+    let shouldThrow = true
+    let rerender: () => void = () => {}
+    function Flaky() {
+      if (shouldThrow) throw new Error('transient')
+      return <span className="text-white">fine</span>
+    }
+    function App() {
+      const [, force] = useState(0)
+      rerender = () => force((n) => n + 1)
+      return (
+        <Deck>
+          <Key position={0}>
+            <Flaky />
+          </Key>
+        </Deck>
+      )
+    }
+    const errors: string[] = []
+    const { controller } = await mount(<App />, undefined, { error: (l) => errors.push(l) })
+    expect(buildManifest(controller).keys[0]!.error).toContain('transient')
+    // Still failing on a re-render: stays on the error tile, logged once.
+    rerender()
+    await controller.settled()
+    expect(buildManifest(controller).keys[0]!.error).toContain('transient')
+    expect(errors.filter((e) => e.includes('render error: transient')).length).toBe(1)
+    // Fixed: the next render recovers.
+    shouldThrow = false
+    rerender()
+    await controller.settled()
+    const key = buildManifest(controller).keys[0]!
+    expect(key.error).toBeNull()
+    expect(key.text).toEqual(['fine'])
+    await controller.shutdown()
+  })
+
   test('out-of-range position warns once and is not rendered', async () => {
     const errors: string[] = []
     const { controller, handle } = await mount(

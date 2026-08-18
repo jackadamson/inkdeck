@@ -60,15 +60,28 @@ class KeyBoundary extends Component<KeyBoundaryProps, BoundaryState> {
   static contextType = DeckContext
   declare context: React.ContextType<typeof DeckContext>
   state: BoundaryState = { error: null }
+  #lastLogged: string | null = null
 
   static getDerivedStateFromError(error: Error): BoundaryState {
     return { error }
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string | null }): void {
+    // A key that keeps failing on every parent render is logged once per
+    // distinct message, not once per attempt.
+    if (this.#lastLogged === error.message) return
+    this.#lastLogged = error.message
     const line = `[inkdeck] [key ${this.props.position}] render error: ${error.message}${info.componentStack ?? ''}`
     if (this.context) this.context.logger.error(line)
     else console.error(line)
+  }
+
+  componentDidUpdate(prevProps: KeyBoundaryProps): void {
+    // New children (the parent re-rendered) ⇒ try again, so a transient error
+    // recovers on the next good render instead of sticking until a remount.
+    if (this.state.error && prevProps.children !== this.props.children) {
+      this.setState({ error: null })
+    }
   }
 
   render(): ReactNode {
@@ -105,4 +118,16 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, BoundaryState> 
     }
     return this.props.children
   }
+}
+
+export interface ImageProps {
+  /** File path (relative to the app file, or absolute) or the image bytes themselves. */
+  src: string | Uint8Array
+  className?: string
+  style?: Record<string, unknown>
+}
+
+/** `<img>` that also accepts in-memory bytes (SPEC §6.1: "file path or Buffer"). */
+export function Image(props: ImageProps): ReactNode {
+  return createElement('img', { ...props })
 }

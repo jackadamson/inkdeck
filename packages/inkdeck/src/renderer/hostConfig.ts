@@ -163,7 +163,9 @@ const hostConfig = {
 
   // React 19 additions
   NotPendingTransition: null,
-  HostTransitionContext: HostTransitionContext as never,
+  // React's public Context type lacks the reconciler's internal fields; the
+  // runtime object is the same thing.
+  HostTransitionContext: HostTransitionContext as unknown as Parameters<typeof ReactReconciler>[0]['HostTransitionContext'],
 
   setCurrentUpdatePriority(newPriority: number): void {
     currentUpdatePriority = newPriority
@@ -200,9 +202,7 @@ const hostConfig = {
   },
 }
 
-// The published @types lag the 0.32 runtime; the config above matches the
-// runtime contract, so silence the structural mismatch at the boundary.
-export const reconciler = ReactReconciler(hostConfig as never)
+export const reconciler = ReactReconciler(hostConfig)
 
 /**
  * Force pending passive effects and sync-lane work to run now. Both exist

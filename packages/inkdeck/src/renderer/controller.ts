@@ -169,8 +169,8 @@ export class DeckController {
         // Errors outside any <Key> (root scope) are fatal (§10).
         this.#commitError = error instanceof Error ? error : new Error(String(error))
       },
-      (error) => {
-        this.logger.error(`[inkdeck] caught error: ${error instanceof Error ? error.message : error}`)
+      () => {
+        // Caught by a KeyBoundary, which logs it with the key position.
       },
       () => {},
       () => {},
@@ -372,7 +372,9 @@ export class DeckController {
   }
 
   #syncKeys(): void {
-    const commit = buildCommitScenes(this.#hostRoot, this.keyCount)
+    const commit = buildCommitScenes(this.#hostRoot, this.keyCount, {
+      registerInlineImage: (bytes) => this.raster.registerInlineImage(bytes),
+    })
     if (commit.brightness !== null) this.setBrightness(commit.brightness)
     for (const position of commit.outOfRange) {
       if (this.#warnedPositions.has(position)) continue

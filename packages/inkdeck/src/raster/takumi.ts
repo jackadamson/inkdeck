@@ -2,24 +2,23 @@
 // The JPEG (device push) and PNG (render command / simulator) are encoded from
 // the same RGBA buffer so every surface shows identical pixels.
 
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Renderer } from '@takumi-rs/core'
+import { Renderer, type ImageSource, type Node as TakumiNode } from '@takumi-rs/core'
 import sharp from 'sharp'
 import type { Model } from '../device/models.js'
 import { registerAppFonts, registerBundledFonts } from './fonts.js'
-import type { SceneElement, SceneNode } from './scene.js'
-
-interface TakumiNode {
-  type: 'container' | 'text' | 'image'
-  [key: string]: unknown
-}
+import { collectImageSources, INLINE_IMAGE_PREFIX, type SceneElement, type SceneNode } from './scene.js'
 
 export class RasterEngine {
   #renderer: Renderer
   #ready: Promise<void>
   /** Base directory for resolving relative img src paths (the app's directory). */
   #assetDir: string
-  #imageCache = new Map<string, Uint8Array>()
+  /** File-backed <img> bytes by src (invalidated on hot reload). */
+  #fileImages = new Map<string, Promise<Uint8Array>>()
+  /** In-memory <img src={bytes}> registered by content hash (see registerInlineImage). */
+  #inlineImages = new Map<string, Uint8Array>()
 
   constructor(assetDir = process.cwd()) {
     this.#renderer = new Renderer()
@@ -27,9 +26,16 @@ export class RasterEngine {
     this.#ready = registerBundledFonts(this.#renderer)
   }
 
-  /** Drop cached <img> bytes (hot reload: a saved asset must be re-read). */
+  /** Drop cached file-backed <img> bytes (hot reload: a saved asset must be re-read). */
   clearImageCache(): void {
-    this.#imageCache.clear()
+    this.#fileImages.clear()
+  }
+
+  /** Register in-memory image bytes; returns the scene src key that refers to them. */
+  registerInlineImage(bytes: Uint8Array): string {
+    const key = `${INLINE_IMAGE_PREFIX}${Bun.hash(bytes).toString(16)}`
+    if (!this.#inlineImages.has(key)) this.#inlineImages.set(key, bytes)
+    return key
   }
 
   async loadAppFonts(fontPaths: string[], appDir: string): Promise<void> {
@@ -40,11 +46,15 @@ export class RasterEngine {
   /** Render a key scene to raw RGBA at the model's native key resolution. */
   async renderScene(scene: SceneNode | null, model: Model): Promise<Uint8Array> {
     await this.#ready
+    // Image bytes are loaded up front (async, cached) and handed to Takumi
+    // by src, so its decoded-image cache works across frames.
+    const images = await Promise.all(collectImageSources(scene).map((src) => this.#imageSource(src)))
     const node = this.#rootNode(scene, model)
-    const buffer = await this.#renderer.render(node as never, {
+    const buffer = await this.#renderer.render(node, {
       width: model.keyW,
       height: model.keyH,
       format: 'raw',
+      images,
     })
     return new Uint8Array(buffer)
   }
@@ -100,15 +110,15 @@ export class RasterEngine {
   }
 
   #elementToTakumi(el: SceneElement): TakumiNode {
-    const meta: Record<string, unknown> = {}
+    const meta: { tw?: string; style?: TakumiNode['style'] } = {}
     if (el.className) meta.tw = el.className // Takumi's Tailwind resolver (SPEC §2)
-    if (el.style) meta.style = el.style
+    if (el.style) meta.style = el.style as TakumiNode['style']
 
     if (el.tag === 'img') {
       if (!el.src) {
-        throw new Error('[inkdeck] <img> requires a src prop — pass a file path (relative to the app file) or an absolute path')
+        throw new Error('[inkdeck] <img> requires a src prop — a file path (relative to the app file), an absolute path, or image bytes')
       }
-      return { type: 'image', src: this.#resolveImage(el.src), ...meta }
+      return { type: 'image', src: el.src, ...meta }
     }
 
     if (el.tag === 'svg') {
@@ -130,19 +140,31 @@ export class RasterEngine {
     }
   }
 
-  #resolveImage(src: string): Uint8Array {
-    const cached = this.#imageCache.get(src)
-    if (cached) return cached
-    const resolved = src.startsWith('/') ? src : join(this.#assetDir, src)
-    let bytes: Uint8Array
-    try {
-      bytes = new Uint8Array(require('node:fs').readFileSync(resolved))
-    } catch {
+  /** Bytes for one <img src>: inline registry, or a file under the app dir (cached). */
+  async #imageSource(src: string): Promise<ImageSource> {
+    if (src.startsWith(INLINE_IMAGE_PREFIX)) {
+      const data = this.#inlineImages.get(src)
+      if (!data) throw new Error(`[inkdeck] <img> refers to unregistered image bytes (${src})`)
+      return { src, data }
+    }
+    if (/^(https?|data):/i.test(src)) {
       throw new Error(
-        `[inkdeck] <img src="${src}"> could not be read (checked ${resolved}). Use a path relative to the app file or an absolute path.`,
+        `[inkdeck] <img src="${src.slice(0, 40)}…"> — remote and data: URLs are not supported (no network, SPEC §16). Use a file path relative to the app file, or pass the image bytes.`,
       )
     }
-    this.#imageCache.set(src, bytes)
-    return bytes
+    let pending = this.#fileImages.get(src)
+    if (!pending) {
+      const resolved = src.startsWith('/') ? src : join(this.#assetDir, src)
+      pending = readFile(resolved)
+        .then((buffer) => new Uint8Array(buffer))
+        .catch(() => {
+          this.#fileImages.delete(src) // do not cache the failure
+          throw new Error(
+            `[inkdeck] <img src="${src}"> could not be read (checked ${resolved}). Use a path relative to the app file or an absolute path.`,
+          )
+        })
+      this.#fileImages.set(src, pending)
+    }
+    return { src, data: await pending }
   }
 }
