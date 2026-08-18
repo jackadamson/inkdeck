@@ -1,6 +1,6 @@
 {
   "name": "@jackadamson/create-inkdeck",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Scaffold an inkdeck app \u2014 React on an Elgato Stream Deck",
   "keywords": [
     "stream-deck",

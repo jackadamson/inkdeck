@@ -8,7 +8,7 @@ bun install
 bun run dev                 # run on the attached Stream Deck, reload on save
 bun run dev --simulate      # no hardware: browser simulator on a local URL
 bun run check               # typecheck + one headless render (exit 0/1)
-bun test                    # harness test, no hardware, mocked subprocesses
+bun test                    # harness test, no hardware (subprocesses mockable)
 ```
 
 Quit the Elgato Stream Deck app before `dev`/`start` — it holds exclusive

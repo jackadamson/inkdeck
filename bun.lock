@@ -34,25 +34,25 @@
     },
     "packages/create-inkdeck": {
       "name": "@jackadamson/create-inkdeck",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "bin": {
         "create-inkdeck": "index.ts",
       },
     },
     "packages/inkdeck": {
       "name": "@jackadamson/inkdeck",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "bin": {
         "inkdeck": "src/cli/index.ts",
       },
       "dependencies": {
         "@takumi-rs/core": "^2.5.4",
+        "@types/react-reconciler": "0.33.0",
         "react-reconciler": "0.33.0",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
         "@types/react": "^19.1.0",
-        "@types/react-reconciler": "0.33.0",
         "react": "^19.2.0",
         "typescript": "^5.8.0",
       },

@@ -16,6 +16,8 @@ export async function listCommand(): Promise<void> {
       console.log('No Stream Decks attached.')
       return
     }
+    console.log('SERIAL\tMODEL\tPRODUCT')
+    console.log('SERIAL\tMODEL\tPRODUCT')
     for (const device of devices) {
       console.log(`${device.serial}\t${device.model}\t(productId 0x${device.productId.toString(16).padStart(4, '0')})`)
     }
