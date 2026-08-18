@@ -1,7 +1,7 @@
 // Typechecks fine, throws at render — `inkdeck check` must exit 1 because the
 // key paints its error tile.
 
-import { Deck, Key } from '@jackadamson/inkdeck'
+import { Deck, Key } from '../../index.js'
 
 function Boom(): never {
   throw new Error('kaboom')

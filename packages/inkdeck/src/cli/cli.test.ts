@@ -65,7 +65,7 @@ describe('inkdeck CLI', () => {
   }, 60000)
 
   test('check exits 1 when a key renders its error tile', async () => {
-    const fixture = join(import.meta.dir, '..', '..', '..', 'test-fixtures', 'throws-at-render.tsx')
+    const fixture = join(import.meta.dir, '..', 'test', 'fixtures', 'throws-at-render.tsx')
     const result = await runCli(['check', 'throws-at-render.tsx'], join(fixture, '..'))
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('error tile')
