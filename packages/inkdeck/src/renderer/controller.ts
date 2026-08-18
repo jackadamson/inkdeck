@@ -244,7 +244,14 @@ export class DeckController {
     this.#handle = handle
     this.#attachHandle(handle)
     this.#detached = false
-    await this.start()
+    try {
+      await this.start()
+    } catch (error) {
+      // The deck dropped again mid-handshake: stay detached (pushes stay
+      // silent) so the caller can acquire it once more; the caller decides.
+      this.#detached = true
+      throw error
+    }
     for (const [position, entry] of this.#keys) {
       entry.rgbaHash = null // force the push past output dedup
       this.#scheduleRaster(position, entry.scene)

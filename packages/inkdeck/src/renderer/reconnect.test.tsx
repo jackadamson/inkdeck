@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import { useState } from 'react'
 import { modelById } from '../device/models.js'
 import { VirtualTransport } from '../transport/virtual.js'
+import { DeviceDisconnectedError } from '../transport/iface.js'
 import { Deck, Key } from './components.js'
 import { DeckController } from './controller.js'
 
@@ -84,6 +85,27 @@ describe('device unplug/replug', () => {
     newHandle.releaseKey(0)
     await controller.settled()
     expect(controller.keySnapshots().find((s) => s.position === 0)!.text).toEqual(['count ', '1'])
+    await controller.shutdown()
+  })
+
+  test('a handshake failure during replaceHandle leaves the controller detached and silent', async () => {
+    const { controller, handle } = await mountTwoKeys()
+    handle.simulateDisconnect()
+
+    const replug = new VirtualTransport(mk2)
+    await replug.open('virtual:0')
+    const flaky = replug.handle
+    flaky.simulateDisconnect() // gone again before reset/brightness land
+    await expect(controller.replaceHandle(flaky)).rejects.toBeInstanceOf(DeviceDisconnectedError)
+    expect(controller.detached).toBe(true)
+
+    // A second, healthy replug still works.
+    const again = new VirtualTransport(mk2)
+    await again.open('virtual:0')
+    await controller.replaceHandle(again.handle)
+    await controller.settled()
+    expect(controller.detached).toBe(false)
+    expect(again.handle.keyImages.has(0)).toBe(true)
     await controller.shutdown()
   })
 

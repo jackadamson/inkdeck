@@ -18,6 +18,7 @@ import {
   cfNumber,
   cfNumberToJs,
   cfRelease,
+  cfRetain,
   cfRunLoopGetCurrent,
   cfRunLoopRunInMode,
   cfSetToArray,
@@ -236,9 +237,12 @@ export class IOKitTransport implements Transport {
       this.#removalPoll = null
       return
     }
-    const present = new Set((await this.list()).map((d) => d.serial))
+    await this.list()
     for (const [serial, handle] of this.#openHandles) {
-      if (!present.has(serial)) {
+      // Liveness is identity, not serial: an unplug/replug (or hub blip) that
+      // completes between two polls yields a *new* IOHIDDeviceRef for the
+      // same serial, and the old handle is just as dead as if it were absent.
+      if (this.#devicesBySerial.get(serial) !== handle.device) {
         this.#openHandles.delete(serial)
         handle.markRemoved()
       }
@@ -259,7 +263,9 @@ class IOKitHandle implements TransportHandle {
   #dead = false
 
   constructor(device: CFRef) {
-    this.#device = device
+    // Retain: the manager drops its reference on removal, and this handle
+    // may still be asked to write/close before the poll flags the removal.
+    this.#device = cfRetain(device)
     // The default run loop mode's contents are the literal string below;
     // CFString comparison is by value, so a fresh CFString works for both
     // scheduling and pumping (avoids binding the kCFRunLoopDefaultMode data symbol).
@@ -335,6 +341,11 @@ class IOKitHandle implements TransportHandle {
     return this.#closed
   }
 
+  /** The IOHIDDeviceRef this handle drives (identity check for removal detection). */
+  get device(): CFRef {
+    return this.#device
+  }
+
   async writeOutput(report: Uint8Array): Promise<void> {
     this.#assertOpen()
     const io = iokit()
@@ -408,6 +419,7 @@ class IOKitHandle implements TransportHandle {
     this.#callback?.close()
     this.#removalCallback?.close()
     cfRelease(this.#runLoopMode)
+    cfRelease(this.#device)
   }
 
   #assertOpen(): void {

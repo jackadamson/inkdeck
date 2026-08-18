@@ -50,6 +50,7 @@ function openCF() {
     CFSetGetCount: { args: [FFIType.u64], returns: FFIType.i64 },
     CFSetGetValues: { args: [FFIType.u64, FFIType.u64], returns: FFIType.void },
     CFRelease: { args: [FFIType.u64], returns: FFIType.void },
+    CFRetain: { args: [FFIType.u64], returns: FFIType.u64 },
     CFRunLoopGetCurrent: { args: [], returns: FFIType.u64 },
     CFRunLoopRunInMode: {
       args: [FFIType.u64, FFIType.f64, FFIType.bool],
@@ -155,6 +156,10 @@ export function cfSetToArray(set: CFRef): CFRef[] {
 
 export function cfRelease(ref: CFRef): void {
   cf().CFRelease(ref)
+}
+
+export function cfRetain(ref: CFRef): CFRef {
+  return cf().CFRetain(ref)
 }
 
 export function cfRunLoopGetCurrent(): CFRef {

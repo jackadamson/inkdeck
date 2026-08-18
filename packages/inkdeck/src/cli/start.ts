@@ -8,7 +8,7 @@ import { createElement, type ComponentType } from 'react'
 import { hardwareTransport } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
 import { DeckController } from '../renderer/controller.js'
-import type { DeviceInfo, Transport, TransportHandle } from '../transport/iface.js'
+import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from '../transport/iface.js'
 import { loadApp } from './headless.js'
 import { DEV_BUNDLE_NAME, loadAppBundle, removeAppBundle } from './devBundle.js'
 
@@ -20,6 +20,12 @@ export interface StartOptions {
 
 const DEVICE_POLL_MS = 1000
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Errors that mean "the device went away", as opposed to a bug. */
+function isDeviceError(error: unknown): boolean {
+  if (error instanceof DeviceDisconnectedError) return true
+  return error instanceof Error && /IOHIDDevice(Set|Get)Report|IOKit handle is closed/.test(error.message)
+}
 
 /**
  * Resolve the target device, waiting for it to appear if necessary — both
@@ -185,18 +191,30 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   const deck = controller
 
   // Unplug ⇒ one line, keep the React tree alive, wait for the same deck to
-  // come back, reattach, repaint everything. Autostart survives replugs.
+  // come back, reattach, repaint everything. Autostart survives replugs, and
+  // a deck that drops again mid-handshake is simply waited for again — only
+  // a non-device error ends the session.
   deck.onDeviceLost(() => {
     void (async () => {
       console.error('[inkdeck] device disconnected')
-      try {
+      for (;;) {
         const { handle: reopened } = await acquireDevice(transport, info.serial)
         if (shuttingDown) return
-        await deck.replaceHandle(reopened)
-        console.error(`[inkdeck] reconnected to ${info.serial} — repainting`)
-      } catch (error) {
-        console.error(`[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-        await shutdown(1)
+        try {
+          await deck.replaceHandle(reopened)
+          console.error(`[inkdeck] reconnected to ${info.serial} — repainting`)
+          return
+        } catch (error) {
+          if (isDeviceError(error)) {
+            console.error(`[inkdeck] reconnect handshake failed (${error instanceof Error ? error.message : error}) — waiting for the deck again`)
+            await reopened.close().catch(() => {})
+            await sleep(DEVICE_POLL_MS)
+            continue
+          }
+          console.error(`[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+          await shutdown(1)
+          return
+        }
       }
     })()
   })
