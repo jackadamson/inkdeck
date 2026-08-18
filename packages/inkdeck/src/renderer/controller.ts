@@ -17,6 +17,7 @@ import { collectText, sceneHash, type SceneElement, type SceneNode } from '../ra
 import type { Clock } from './clock.js'
 import { SystemClock } from './clock.js'
 import { DeckContext } from './context.js'
+import { InputMachine, type Gesture } from './input.js'
 import { reconciler } from './hostConfig.js'
 import {
   createHostRoot,
@@ -31,12 +32,6 @@ import {
 
 const DEFAULT_LONG_PRESS_MS = 500
 const INPUT_PRIORITY_WINDOW_MS = 500
-// Physical key switches bounce: a press can arrive as down→up→down within a
-// few ms, double-firing onPress (which fires on key-down). A key-down within
-// this window of the same key's release is treated as bounce and dropped;
-// releases are never dropped, so pressed-state cannot wedge. Runs on the
-// injectable clock (M3's frozen-time taps must advance past it between taps).
-const KEY_DEBOUNCE_MS = 30
 const METRICS_WINDOW_MS = 10_000
 // Long enough for the transport's removal polling (1 s) to flag an unplug.
 const DISCONNECT_GRACE_MS = 1200
@@ -67,8 +62,8 @@ interface KeyEntry {
   error: string | null
   hasPress: boolean
   hasLongPress: boolean
-  onPress?: () => void | Promise<void>
-  onLongPress?: () => void | Promise<void>
+  onPress?: () => unknown
+  onLongPress?: () => unknown
   longPressMs: number
   rgba: Uint8Array | null
   rgbaHash: string | null
@@ -101,14 +96,10 @@ export class DeckController {
   #renderedListeners: Array<(changed: number[]) => void> = []
   #commitError: Error | null = null
 
-  #pressed: boolean[]
+  #input: InputMachine
   #pressedVersion = 0
   #pressListeners = new Set<() => void>()
-  #lastInputAt = new Map<number, number>()
-  #lastReleaseAt = new Map<number, number>()
   #handlerErrorListeners = new Set<(position: number, handler: string, error: unknown) => void>()
-  #longPressTimers = new Map<number, number>()
-  #longPressFired = new Set<number>()
 
   #brightness = 100
   #brightnessListeners = new Set<() => void>()
@@ -122,7 +113,7 @@ export class DeckController {
   // Debug render metrics (§6.2): counted per 10 s window, logged to stderr so
   // performance regressions are visible as text an agent loop can read.
   #metricsTimer: number | null = null
-  #metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0, renders: 0 }
+  #metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 }
 
   constructor(options: ControllerOptions) {
     this.model = options.model
@@ -130,7 +121,19 @@ export class DeckController {
     this.raster = new RasterEngine(options.assetDir)
     this.#handle = options.handle
     this.#serial = options.serial ?? null
-    this.#pressed = new Array(this.keyCount).fill(false)
+    this.#input = new InputMachine({
+      clock: this.clock,
+      keyCount: this.keyCount,
+      longPressMs: (position) => {
+        const entry = this.#keys.get(position)
+        return entry?.onLongPress ? entry.longPressMs : null
+      },
+      onGesture: (position, gesture) => this.#onGesture(position, gesture),
+      onChange: () => {
+        this.#pressedVersion++
+        for (const listener of [...this.#pressListeners]) listener()
+      },
+    })
 
     this.#hostRoot = createHostRoot()
     this.#hostRoot.onCommit = () => this.#onCommit()
@@ -165,11 +168,11 @@ export class DeckController {
     const considered = m.flushes + m.sceneSkips + m.dedupSkips
     if (considered === 0) return // quiet window — nothing to report
     const pct = (n: number) => `${Math.round((n / considered) * 100)}%`
-    const avg = m.renders > 0 ? (m.renderMsTotal / m.renders).toFixed(1) : '0'
+    const avg = m.flushes > 0 ? (m.renderMsTotal / m.flushes).toFixed(1) : '0'
     console.error(
       `[inkdeck] metrics(10s): flushes=${m.flushes} scene-skip=${pct(m.sceneSkips)} dedup=${pct(m.dedupSkips)} render avg=${avg}ms peak=${m.renderMsPeak.toFixed(1)}ms`,
     )
-    this.#metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0, renders: 0 }
+    this.#metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 }
   }
 
   get keyCount(): number {
@@ -242,6 +245,7 @@ export class DeckController {
   /** Render the app element. Errors surface through settled(). */
   render(element: ReactNode): void {
     this.#commitPending = true
+    this.#commitError = null // a fresh render gets a fresh verdict
     const wrapped = createElement(DeckContext.Provider, { value: this }, element)
     reconciler.updateContainer(wrapped, this.#fiberRoot, null, () => {
       this.#commitPending = false
@@ -257,12 +261,20 @@ export class DeckController {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
     let idleChecks = 0
     while (idleChecks < 2) {
-      if (this.#commitError) throw this.#commitError
+      this.#throwCommitError()
       const busy = this.#commitPending || this.#flushing || this.#pendingRaster.size > 0
       idleChecks = busy ? 0 : idleChecks + 1
       await sleep(5)
     }
-    if (this.#commitError) throw this.#commitError
+    this.#throwCommitError()
+  }
+
+  /** A commit error is reported once; the next settled() reflects the next commit. */
+  #throwCommitError(): void {
+    const error = this.#commitError
+    if (!error) return
+    this.#commitError = null
+    throw error
   }
 
   onRendered(listener: (changed: number[]) => void): () => void {
@@ -318,7 +330,7 @@ export class DeckController {
   // ---- key press state (useKeyState) ----
 
   isPressed(position: number): boolean {
-    return this.#pressed[position] ?? false
+    return this.#input.isPressed(position)
   }
 
   get pressedVersion(): number {
@@ -486,38 +498,64 @@ export class DeckController {
   async #flushLoop(): Promise<void> {
     if (this.#flushing) return
     this.#flushing = true
-    const changed: number[] = []
     try {
+      // Rounds: each pass drains the keys pending at its start, then emits
+      // one `rendered` for the round, so listeners (agent, simulator, dev)
+      // keep up under continuous animation instead of waiting for a full
+      // drain that may never come.
       while (this.#pendingRaster.size > 0 && !this.#closed && !this.#detached) {
-        const position = this.#nextFlushPosition()
-        const { scene } = this.#pendingRaster.get(position)!
-        this.#pendingRaster.delete(position)
-        try {
-          const didChange = await this.#rasterAndPush(position, scene)
-          if (didChange) changed.push(position)
-        } catch (error) {
-          if (error instanceof DeviceDisconnectedError || this.#detached) {
-            this.#pendingRaster.clear() // unplugged mid-flush: one event, no per-key flood
-            break
-          }
-          // A failed device write may be an unplug the transport has not
-          // flagged yet (removal detection polls, §DECISIONS): give detection
-          // one cycle before treating it as a real per-key failure.
-          if (error instanceof Error && error.message.includes('IOHIDDeviceSetReport')) {
-            await new Promise((resolve) => setTimeout(resolve, DISCONNECT_GRACE_MS))
-            if (this.#detached) {
-              this.#pendingRaster.clear()
+        const changed = new Set<number>()
+        const roundSize = this.#pendingRaster.size
+        for (let i = 0; i < roundSize && this.#pendingRaster.size > 0 && !this.#closed && !this.#detached; i++) {
+          const position = this.#nextFlushPosition()
+          const { scene } = this.#pendingRaster.get(position)!
+          this.#pendingRaster.delete(position)
+          try {
+            const didChange = await this.#rasterAndPush(position, scene)
+            if (didChange) changed.add(position)
+          } catch (error) {
+            if (error instanceof DeviceDisconnectedError || this.#detached) {
+              this.#pendingRaster.clear() // unplugged mid-flush: one event, no per-key flood
               break
             }
+            // A failed device write may be an unplug the transport has not
+            // flagged yet (removal detection polls, §DECISIONS): give detection
+            // one cycle before treating it as a real per-key failure.
+            if (error instanceof Error && error.message.includes('IOHIDDeviceSetReport')) {
+              await new Promise((resolve) => setTimeout(resolve, DISCONNECT_GRACE_MS))
+              if (this.#detached) {
+                this.#pendingRaster.clear()
+                break
+              }
+            }
+            const message = error instanceof Error ? error.message : String(error)
+            console.error(`[inkdeck] [key ${position}] raster/push failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+            if (await this.#paintRasterFailure(position, message)) changed.add(position)
           }
-          console.error(`[inkdeck] [key ${position}] raster/push failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+        }
+        if (changed.size > 0) {
+          const sorted = [...changed].sort((a, b) => a - b)
+          for (const listener of [...this.#renderedListeners]) listener(sorted)
         }
       }
     } finally {
       this.#flushing = false
-      if (changed.length > 0) {
-        for (const listener of [...this.#renderedListeners]) listener([...changed].sort((a, b) => a - b))
-      }
+    }
+  }
+
+  /**
+   * A scene that cannot be rasterized (missing image, bad SVG, …) is recorded
+   * on the entry — so `check`/the manifest see it structurally — and the
+   * error tile is painted so the key does not silently keep stale pixels.
+   */
+  async #paintRasterFailure(position: number, message: string): Promise<boolean> {
+    const entry = this.#keys.get(position)
+    if (!entry) return false
+    entry.error = `raster failed: ${message}`
+    try {
+      return await this.#rasterAndPush(position, this.raster.errorTileScene())
+    } catch {
+      return false
     }
   }
 
@@ -526,8 +564,7 @@ export class DeckController {
     const now = this.clock.now()
     let best: number | null = null
     for (const position of this.#pendingRaster.keys()) {
-      const inputAt = this.#lastInputAt.get(position)
-      if (inputAt !== undefined && now - inputAt <= INPUT_PRIORITY_WINDOW_MS) {
+      if (now - this.#input.lastInputAt(position) <= INPUT_PRIORITY_WINDOW_MS) {
         return position
       }
       if (best === null) best = position
@@ -545,17 +582,18 @@ export class DeckController {
       this.#metrics.dedupSkips++
       return false
     }
-    if (entry) {
-      entry.rgba = rgba
-      entry.rgbaHash = rgbaHash
-    }
     const jpeg = await this.raster.rgbaToJpeg(rgba, this.model)
     for (const packet of encodeKeyImagePackets(this.model, position, jpeg)) {
       await this.#handle.writeOutput(packet)
     }
+    // Recorded only after the last packet succeeded: a failed write must not
+    // be deduped away as "already on the device".
+    if (entry) {
+      entry.rgba = rgba
+      entry.rgbaHash = rgbaHash
+    }
     const elapsed = performance.now() - started
     this.#metrics.flushes++
-    this.#metrics.renders++
     this.#metrics.renderMsTotal += elapsed
     this.#metrics.renderMsPeak = Math.max(this.#metrics.renderMsPeak, elapsed)
     return true
@@ -566,58 +604,17 @@ export class DeckController {
   #onInputReport(report: Uint8Array): void {
     const states = parseInputReport(this.model, report)
     if (!states) return
-    let anyChange = false
-    for (let position = 0; position < states.length; position++) {
-      const pressed = states[position]
-      if (pressed === this.#pressed[position]) continue
-      const now = this.clock.now()
-      if (pressed) {
-        const releasedAt = this.#lastReleaseAt.get(position)
-        if (releasedAt !== undefined && now - releasedAt < KEY_DEBOUNCE_MS) continue
-      } else {
-        this.#lastReleaseAt.set(position, now)
-      }
-      anyChange = true
-      this.#pressed[position] = pressed
-      this.#pressedVersion++
-      this.#lastInputAt.set(position, now)
-      if (pressed) this.#onKeyDown(position)
-      else this.#onKeyUp(position)
-    }
-    if (!anyChange) return
-    for (const listener of [...this.#pressListeners]) listener()
+    this.#input.apply(states)
   }
 
-  #onKeyDown(position: number): void {
+  #onGesture(position: number, gesture: Gesture): void {
     const entry = this.#keys.get(position)
     if (!entry) return
-    this.#longPressFired.delete(position)
-    if (entry.onLongPress) {
-      const timer = this.clock.setTimeout(() => {
-        this.#longPressTimers.delete(position)
-        this.#longPressFired.add(position)
-        this.#invokeHandler(position, 'onLongPress', entry.onLongPress!)
-      }, entry.longPressMs)
-      this.#longPressTimers.set(position, timer)
+    if (gesture === 'longPress') {
+      if (entry.onLongPress) this.#invokeHandler(position, 'onLongPress', entry.onLongPress)
     } else if (entry.onPress) {
-      // No long-press competing ⇒ fire on key-down for instant feel.
       this.#invokeHandler(position, 'onPress', entry.onPress)
     }
-  }
-
-  #onKeyUp(position: number): void {
-    const entry = this.#keys.get(position)
-    if (!entry) return
-    const timer = this.#longPressTimers.get(position)
-    if (timer !== undefined) {
-      this.clock.clearTimeout(timer)
-      this.#longPressTimers.delete(position)
-    }
-    if (entry.onLongPress && !this.#longPressFired.has(position) && entry.onPress) {
-      // Long-press armed but released early ⇒ this was a short press.
-      this.#invokeHandler(position, 'onPress', entry.onPress)
-    }
-    this.#longPressFired.delete(position)
   }
 
   /**
@@ -638,11 +635,11 @@ export class DeckController {
     console.error(`[inkdeck] [key ${position}] ${name} failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
   }
 
-  #invokeHandler(position: number, name: string, handler: () => void | Promise<void>): void {
+  #invokeHandler(position: number, name: string, handler: () => unknown): void {
     try {
       const result = handler()
-      if (result && typeof (result as Promise<void>).then === 'function') {
-        void (result as Promise<void>).catch((error) => {
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        void (result as Promise<unknown>).catch((error) => {
           this.#reportHandlerError(position, name, error)
         })
       }
@@ -658,6 +655,7 @@ export class DeckController {
     if (this.#closed) return
     this.#closed = true
     if (this.#metricsTimer !== null) this.clock.clearInterval(this.#metricsTimer)
+    this.#input.dispose()
     reconciler.updateContainer(null, this.#fiberRoot, null, null)
     try {
       await this.#handle.sendFeature(encodeReset())

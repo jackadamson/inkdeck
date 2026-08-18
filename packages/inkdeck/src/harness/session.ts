@@ -10,14 +10,17 @@ import type { Model } from '../device/models.js'
 import { VirtualTransport, type VirtualHandle } from '../transport/virtual.js'
 import { DeckController } from '../renderer/controller.js'
 import { FrozenClock, SystemClock, type Clock } from '../renderer/clock.js'
+import { KEY_DEBOUNCE_MS } from '../renderer/input.js'
 import { setExecInterceptor } from '../renderer/exec.js'
 import { buildManifest, type Manifest } from './manifest.js'
 import { createMockExecInterceptor, type MockExecConfig } from './mockExec.js'
 
-// A tap must outlive the contact-bounce window (30 ms, see controller.ts) or
-// back-to-back taps coalesce; the post-release advance under frozen time
-// exists for the same reason.
 const DEFAULT_TAP_HOLD_MS = 50
+// A release is committed by the controller only KEY_DEBOUNCE_MS after the
+// physical up (a re-press inside that window is contact bounce = still held),
+// so every release here waits that window out — otherwise back-to-back taps
+// merge into one hold.
+const RELEASE_SETTLE_MS = KEY_DEBOUNCE_MS + 5
 
 export interface HarnessOptions {
   model: Model
@@ -93,15 +96,23 @@ export class HarnessSession {
     this.handle.pressKey(position)
   }
 
+  /**
+   * Physical release. Under frozen time the clock also advances past the
+   * contact-bounce window so the release commits immediately (a following
+   * press() is then a new press, not bounce); under real time it commits
+   * KEY_DEBOUNCE_MS later on its own — use tap() or settled() to wait.
+   */
   release(position: number): void {
     this.#assertPosition(position)
     this.handle.releaseKey(position)
+    if (this.frozen) (this.clock as FrozenClock).advance(RELEASE_SETTLE_MS)
   }
 
   /**
    * Press + release. Under frozen time the clock advances by holdMs during the
    * hold (driving long-press timers) and past the contact-bounce window after
-   * release; under real time the hold is an actual sleep.
+   * release; under real time both are actual sleeps, so back-to-back taps are
+   * distinct presses.
    */
   async tap(position: number, holdMs = DEFAULT_TAP_HOLD_MS): Promise<void> {
     this.#assertPosition(position)
@@ -111,9 +122,9 @@ export class HarnessSession {
     } else {
       await new Promise((resolve) => setTimeout(resolve, holdMs))
     }
-    this.handle.releaseKey(position)
-    if (this.frozen) {
-      ;(this.clock as FrozenClock).advance(DEFAULT_TAP_HOLD_MS)
+    this.release(position)
+    if (!this.frozen) {
+      await new Promise((resolve) => setTimeout(resolve, RELEASE_SETTLE_MS))
     }
   }
 
