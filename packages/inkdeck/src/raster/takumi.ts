@@ -91,10 +91,9 @@ export class RasterEngine {
   async #encodeRgba(rgba: Uint8Array, model: Model, format: 'jpeg' | 'png', transform: string | null): Promise<Uint8Array> {
     await this.#ready
     const { keyW: width, keyH: height } = model
-    const swap = model.transform.rotate === 90 || model.transform.rotate === 270
     const node: TakumiNode = {
       type: 'container',
-      style: { width: swap ? height : width, height: swap ? width : height, display: 'flex' },
+      style: { width, height, display: 'flex' },
       children: [
         {
           type: 'image',
@@ -104,8 +103,8 @@ export class RasterEngine {
       ],
     }
     const buffer = await this.#renderer.render(node, {
-      width: swap ? height : width,
-      height: swap ? width : height,
+      width,
+      height,
       format,
       ...(format === 'jpeg' ? { quality: 95 } : {}),
     })
@@ -202,11 +201,9 @@ export class RasterEngine {
 
 /** The model's image transform (SPEC §5.3) as CSS applied to the RGBA node. */
 function deviceTransformCss(model: Model): string | null {
-  const parts: string[] = []
-  const { flipH, flipV, rotate } = model.transform
-  if (flipH && flipV) parts.push('scale(-1, -1)')
-  else if (flipH) parts.push('scaleX(-1)')
-  else if (flipV) parts.push('scaleY(-1)')
-  if (rotate !== 0) parts.push(`rotate(${rotate}deg)`)
-  return parts.length ? parts.join(' ') : null
+  const { flipH, flipV } = model.transform
+  if (flipH && flipV) return 'scale(-1, -1)'
+  if (flipH) return 'scaleX(-1)'
+  if (flipV) return 'scaleY(-1)'
+  return null
 }

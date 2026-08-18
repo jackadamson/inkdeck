@@ -1,6 +1,7 @@
 // Manifest (SPEC §11.1): the semantic tree captured before rasterization.
 // Structure beats pixels for agents; PNGs are still written for visual checks.
 
+import type { ModelId } from '../device/models.js'
 import type { DeckController } from '../renderer/controller.js'
 
 export interface KeyManifest {
@@ -14,7 +15,7 @@ export interface KeyManifest {
 }
 
 export interface Manifest {
-  model: string
+  model: ModelId
   columns: number
   rows: number
   keys: KeyManifest[]

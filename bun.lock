@@ -44,14 +44,17 @@
       },
       "dependencies": {
         "@takumi-rs/core": "^2.5.4",
-        "react": "^19.1.0",
-        "react-reconciler": "^0.32.0",
+        "react-reconciler": "0.32.0",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
         "@types/react": "^19.1.0",
         "@types/react-reconciler": "^0.32.0",
+        "react": "^19.1.0",
         "typescript": "^5.8.0",
+      },
+      "peerDependencies": {
+        "react": "^19.1.0",
       },
     },
     "packages/test-fixtures": {

@@ -12,31 +12,36 @@
 // Verified on real hardware for the XL (M2, see HARDWARE.md); the other gen-2
 // models carry the same protocol per the source above but are unverified.
 
-export type ModelId = 'mk2' | 'xl' | 'mini' | 'plus' | 'neo' | 'original-v2'
+/** Every model discovery recognises (so `inkdeck list` can name it). */
+export type KnownModelId = 'mk2' | 'xl' | 'mini' | 'plus' | 'neo' | 'original-v2'
+/** Models the v1 render pipeline drives (gen-2 JPEG keys, no dial/LCD extras needed). */
+export type RenderableModelId = 'mk2' | 'xl' | 'neo' | 'original-v2'
+export type ModelId = KnownModelId
 
 export interface Model {
-  id: ModelId
+  id: KnownModelId
   name: string
   productIds: number[]
   columns: number
   rows: number
   keyW: number
   keyH: number
-  imageFormat: 'jpeg' | 'bmp'
-  transform: { flipH: boolean; flipV: boolean; rotate: 0 | 90 | 180 | 270 }
+  /** Image orientation the device expects (SPEC §5.3). */
+  transform: { flipH: boolean; flipV: boolean }
   packetSize: number
-  hasDials?: boolean
-  lcdStrip?: { w: number; h: number }
+  /** False ⇒ discovery only; `unsupported` says why rendering is post-MVP. */
+  renderable: boolean
+  unsupported?: string
 }
 
 export const VENDOR_ID = 0x0fd9
 
 const GEN2_JPEG = {
-  imageFormat: 'jpeg' as const,
   // generic-gen2.ts: JpegButtonLcdImagePacker transform { xFlip: true, yFlip: true }
-  transform: { flipH: true, flipV: true, rotate: 0 as const },
+  transform: { flipH: true, flipV: true },
   // imageWriter.ts: StreamdeckDefaultImageWriter MAX_PACKET_SIZE = 1024 (includes 8-byte header)
   packetSize: 1024,
+  renderable: true,
 }
 
 export const MODELS: Model[] = [
@@ -77,8 +82,7 @@ export const MODELS: Model[] = [
     columns: 4,
     rows: 2,
     keyW: 96,
-    keyH: 96, // models/neo.ts (8 main keys; the 2 touch keys + LCD strip are [P1])
-    lcdStrip: { w: 248, h: 58 },
+    keyH: 96, // models/neo.ts (8 main keys; the 2 touch keys + 248×58 LCD strip are [P1])
     ...GEN2_JPEG,
   },
   {
@@ -88,12 +92,11 @@ export const MODELS: Model[] = [
     columns: 4,
     rows: 2,
     keyW: 120,
-    keyH: 120, // models/plus.ts
-    imageFormat: 'jpeg',
-    transform: { flipH: false, flipV: false, rotate: 0 },
+    keyH: 120, // models/plus.ts (4 dials + 800×100 LCD strip are [P1])
+    transform: { flipH: false, flipV: false },
     packetSize: 1024,
-    hasDials: true,
-    lcdStrip: { w: 800, h: 100 },
+    renderable: false,
+    unsupported: 'dial/LCD devices are post-MVP',
   },
   {
     id: 'mini',
@@ -102,15 +105,15 @@ export const MODELS: Model[] = [
     columns: 3,
     rows: 2,
     keyW: 80,
-    keyH: 80, // models/6-key.ts
-    imageFormat: 'bmp',
-    transform: { flipH: false, flipV: false, rotate: 90 },
+    keyH: 80, // models/6-key.ts (gen-1: BMP images rotated 90°)
+    transform: { flipH: false, flipV: false },
     packetSize: 1024,
+    renderable: false,
+    unsupported: 'gen-1 BMP devices are post-MVP',
   },
 ]
 
-/** Models the v1 render pipeline supports (gen-2 JPEG devices, no dial/LCD extras needed). */
-export const RENDERABLE_MODELS: ModelId[] = ['mk2', 'original-v2', 'xl', 'neo']
+export const RENDERABLE_MODELS: RenderableModelId[] = MODELS.filter((m) => m.renderable).map((m) => m.id as RenderableModelId)
 
 export function modelById(id: string): Model | undefined {
   return MODELS.find((m) => m.id === id)
@@ -126,9 +129,9 @@ export function requireRenderableModel(id: string): Model {
     const known = MODELS.map((m) => m.id).join(', ')
     throw new Error(`[inkdeck] unknown model "${id}". Known models: ${known}`)
   }
-  if (!RENDERABLE_MODELS.includes(model.id)) {
+  if (!model.renderable) {
     throw new Error(
-      `[inkdeck] model "${id}" is not renderable in v1 (${model.imageFormat === 'bmp' ? 'gen-1 BMP devices are post-MVP' : 'dial/LCD devices are post-MVP'}). Use one of: ${RENDERABLE_MODELS.join(', ')}`,
+      `[inkdeck] model "${id}" is not renderable in v1 (${model.unsupported ?? 'unsupported'}). Use one of: ${RENDERABLE_MODELS.join(', ')}`,
     )
   }
   return model
