@@ -9,6 +9,7 @@ import { hardwareTransport, selectDevice } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
 import type { DeckController } from '../renderer/controller.js'
 import { bootDeck } from '../session.js'
+import { longRunning, type RunningCommand } from './lifecycle.js'
 import {
   DeviceDisconnectedError,
   TransportIOError,
@@ -151,7 +152,7 @@ export function watchApp(absPath: string, displayPath: string, controller: DeckC
   }
 }
 
-export async function startCommand(appPath: string, options: StartOptions = {}): Promise<number> {
+export async function startCommand(appPath: string, options: StartOptions = {}): Promise<number | RunningCommand> {
   const app = await loadApp(appPath)
 
   const { transport, reason } = await hardwareTransport()
@@ -162,17 +163,15 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
 
   let controller: DeckController | null = null
   let stopWatch: (() => void) | null = null
-  let shuttingDown = false
-  const shutdown = async (code: number) => {
-    if (shuttingDown) return
-    shuttingDown = true
+  const { running, finish } = longRunning(async () => {
     stopWatch?.()
-    // Clear deck, reset, close transport, exit (§9).
+    // Clear deck, reset, close transport (§9).
     await controller?.shutdown()
-    process.exit(code)
-  }
-  process.on('SIGINT', () => void shutdown(0))
-  process.on('SIGTERM', () => void shutdown(0))
+  })
+  let shuttingDown = false
+  void running.done.then(() => {
+    shuttingDown = true
+  })
 
   const wanted = options.device ?? process.env.INKDECK_DEVICE
   const { info, handle } = await acquireDevice(transport, wanted)
@@ -191,7 +190,6 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   } catch (error) {
     console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
     await handle.close().catch(() => {})
-    await shutdown(1)
     return 1
   }
   controller = deck
@@ -205,7 +203,10 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
       console.error('[inkdeck] device disconnected')
       for (;;) {
         const { handle: reopened } = await acquireDevice(transport, info.serial)
-        if (shuttingDown) return
+        if (shuttingDown) {
+          await reopened.close().catch(() => {})
+          return
+        }
         try {
           await deck.replaceHandle(reopened)
           console.error(`[inkdeck] reconnected to ${info.serial} — repainting`)
@@ -218,7 +219,7 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
             continue
           }
           console.error(`[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-          await shutdown(1)
+          await finish(1)
           return
         }
       }
@@ -230,7 +231,6 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   }
 
   // Long-running from here: the IOKit run-loop pump interval keeps the
-  // process alive, and exit happens through the signal handlers above —
-  // resolving would let index.ts process.exit() and kill the session.
-  return new Promise<number>(() => {})
+  // process alive; index.ts ends the session on SIGINT/SIGTERM via shutdown().
+  return running
 }

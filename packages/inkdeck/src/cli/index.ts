@@ -2,6 +2,7 @@
 // inkdeck CLI (SPEC §9). Arg parsing via util.parseArgs — no CLI helper deps (§2).
 
 import { parseArgs as nodeParseArgs } from 'node:util'
+import type { RunningCommand } from './lifecycle.js'
 
 const USAGE = `Usage:
   inkdeck render <app.tsx> --out DIR [--model M]   headless one-shot: PNGs + manifest.json
@@ -28,7 +29,7 @@ const parseArgs: typeof nodeParseArgs = (config) => {
   }
 }
 
-async function main(): Promise<number> {
+async function main(): Promise<number | RunningCommand> {
   const [command, ...rest] = Bun.argv.slice(2)
 
   switch (command) {
@@ -165,7 +166,18 @@ async function main(): Promise<number> {
   }
 }
 
-main().then(
+/** Only place the process exits or listens for signals: run the command,
+ *  hand SIGINT/SIGTERM to its shutdown(), exit with its code. */
+async function run(): Promise<number> {
+  const result = await main()
+  if (typeof result === 'number') return result
+  const stop = () => void result.shutdown()
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+  return result.done
+}
+
+run().then(
   (code) => process.exit(code),
   (error) => {
     if (error instanceof UsageError) {

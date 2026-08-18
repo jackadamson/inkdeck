@@ -21,6 +21,7 @@ import type { DeckController } from '../renderer/controller.js'
 import type { VirtualHandle } from '../transport/virtual.js'
 import { HarnessSession } from '../harness/session.js'
 import { loadApp, resolveHeadlessModel } from './loadApp.js'
+import { longRunning, type RunningCommand } from './lifecycle.js'
 import { createElement } from 'react'
 
 interface WsData {
@@ -169,7 +170,7 @@ export interface SimulateOptions {
   watch?: boolean
 }
 
-export async function simulateCommand(appPath: string, options: SimulateOptions = {}): Promise<number> {
+export async function simulateCommand(appPath: string, options: SimulateOptions = {}): Promise<RunningCommand> {
   const app = await loadApp(appPath)
   const model = resolveHeadlessModel(app, options.model)
   const session = await HarnessSession.start({
@@ -183,24 +184,18 @@ export async function simulateCommand(appPath: string, options: SimulateOptions 
   console.error(`[inkdeck] open ${sim.url}`)
 
   let stopWatch: (() => void) | null = null
-  let shuttingDown = false
-  const shutdown = async () => {
-    if (shuttingDown) return
-    shuttingDown = true
+  const { running } = longRunning(async () => {
     stopWatch?.()
     await sim.stop()
     await session.shutdown()
-    process.exit(0)
-  }
-  process.on('SIGINT', () => void shutdown())
-  process.on('SIGTERM', () => void shutdown())
+  })
 
   if (options.watch) {
     const { watchApp } = await import('./start.js')
     stopWatch = watchApp(app.appPath, appPath, session.controller)
   }
 
-  return new Promise<number>(() => {})
+  return running
 }
 
 // Vanilla JS, served from the simulator's own origin; the page reads the

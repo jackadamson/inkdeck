@@ -7,7 +7,8 @@ import { createElement } from 'react'
 import { modelById } from '../device/models.js'
 import { Deck, Key } from '../renderer/components.js'
 import { HarnessSession } from '../harness/session.js'
-import { startSimulatorServer, type SimulatorServer } from './simulate.js'
+import { MIC_MUTE_APP } from '../test/helpers.js'
+import { simulateCommand, startSimulatorServer, type SimulatorServer } from './simulate.js'
 
 let session: HarnessSession
 let sim: SimulatorServer
@@ -131,5 +132,11 @@ describe('browser simulator (§16)', () => {
     await until(() => messages.some((m) => m.type === 'error'))
 
     ws.close()
+  })
+
+  test('simulateCommand runs in-process and shuts down idempotently on request', async () => {
+    const running = await simulateCommand(MIC_MUTE_APP, { model: 'mk2' })
+    await Promise.all([running.shutdown(), running.shutdown()])
+    expect(await running.done).toBe(0)
   })
 })

@@ -11,6 +11,7 @@ import { HarnessSession } from '../harness/session.js'
 import { loadMockExecFile } from '../harness/mockExec.js'
 import { loadApp, resolveHeadlessModel } from './loadApp.js'
 import type { Logger } from '../renderer/logger.js'
+import { longRunning, type RunningCommand } from './lifecycle.js'
 import { createElement } from 'react'
 
 interface AgentFlags {
@@ -32,7 +33,7 @@ type Command = CommandId &
     | { cmd: 'exit' }
   )
 
-export async function agentCommand(appPath: string, flags: AgentFlags): Promise<number> {
+export async function agentCommand(appPath: string, flags: AgentFlags): Promise<RunningCommand> {
   const emit = (event: Record<string, unknown>): void => {
     process.stdout.write(`${JSON.stringify(event)}\n`)
   }
@@ -79,12 +80,13 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
 
   emit({ event: 'ready', manifest: session.manifest() })
 
-  const shutdown = async (code: number): Promise<never> => {
+  const { running, finish } = longRunning(async () => {
     await session.shutdown()
-    process.exit(code)
-  }
-  process.on('SIGINT', () => void shutdown(0))
-  process.on('SIGTERM', () => void shutdown(0))
+  })
+  let stopped = false
+  void running.done.then(() => {
+    stopped = true
+  })
 
   const requireNumber = (value: unknown, field: string): number => {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -125,7 +127,7 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
       }
       case 'exit':
         emit(tagged({ event: 'exit' }))
-        await shutdown(0)
+        await finish(0)
         return
       default:
         throw new Error(`unknown cmd "${(command as { cmd?: unknown }).cmd}"`)
@@ -138,7 +140,9 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
 
   // Commands run strictly sequentially: the next stdin line is not processed
   // until the previous command's effects have drained and been acknowledged.
+  void (async () => {
   for await (const line of console) {
+    if (stopped) break
     const trimmed = line.trim()
     if (trimmed.length === 0) continue
     let parsed: Command
@@ -165,6 +169,8 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
   }
 
   // EOF on stdin ⇒ clean exit (§11.2).
-  await shutdown(0)
-  return 0
+  await finish(0)
+  })()
+
+  return running
 }
