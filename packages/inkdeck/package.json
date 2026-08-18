@@ -1,8 +1,27 @@
 {
   "name": "@jackadamson/inkdeck",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "React renderer for Elgato Stream Deck \u2014 Ink, but the terminal is a grid of LCD keys",
+  "keywords": [
+    "stream-deck",
+    "streamdeck",
+    "elgato",
+    "react",
+    "react-renderer",
+    "bun",
+    "hid",
+    "usb"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/jackadamson/inkdeck#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackadamson/inkdeck.git",
+    "directory": "packages/inkdeck"
+  },
+  "bugs": {
+    "url": "https://github.com/jackadamson/inkdeck/issues"
+  },
   "type": "module",
   "bin": {
     "inkdeck": "src/cli/index.ts"
@@ -24,6 +43,9 @@
   ],
   "engines": {
     "bun": ">=1.3.11"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@takumi-rs/core": "^2.5.4",
