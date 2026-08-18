@@ -9,7 +9,7 @@
 
 import { dlopen, FFIType, JSCallback, ptr, toArrayBuffer, type Pointer } from 'bun:ffi'
 import { modelByProductId, VENDOR_ID } from '../device/models.js'
-import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
+import { DeviceDisconnectedError, TransportIOError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
 import {
   bufPtr,
   CF_NULL,
@@ -123,6 +123,11 @@ function openFailureMessage(serial: string): string {
 // observed to never fire (macOS 15.6/arm64, Bun 1.3.11) — the manager's set,
 // drained via the run loop, is the reliable removal signal.
 const REMOVAL_POLL_MS = 1000
+// A failed report may be an unplug that removal polling has not flagged yet:
+// a failing write waits this long (> one poll) for the verdict before it is
+// reported as a plain I/O error, so callers never see a per-key error flood
+// for what is really a disconnect.
+const DISCONNECT_GRACE_MS = REMOVAL_POLL_MS + 200
 
 export class IOKitTransport implements Transport {
   #manager: CFRef = CF_NULL
@@ -358,8 +363,19 @@ class IOKitHandle implements TransportHandle {
       BigInt(report.length),
     )
     if (rc !== kIOReturnSuccess) {
-      throw new Error(`[inkdeck] IOHIDDeviceSetReport(output) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+      await this.#ioFailure(`IOHIDDeviceSetReport(output) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
     }
+  }
+
+  /** Classify a failed report: disconnect (after giving removal detection one
+   *  poll cycle) or a genuine I/O error. Always throws. */
+  async #ioFailure(detail: string): Promise<never> {
+    const deadline = Date.now() + DISCONNECT_GRACE_MS
+    while (!this.#dead && !this.#closed && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    this.#assertOpen()
+    throw new TransportIOError(`[inkdeck] ${detail}`)
   }
 
   async sendFeature(report: Uint8Array): Promise<void> {
@@ -381,7 +397,7 @@ class IOKitHandle implements TransportHandle {
       await new Promise((resolve) => setTimeout(resolve, 20))
       this.#assertOpen() // don't retry against a device that vanished mid-wait
     }
-    throw new Error(`[inkdeck] IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+    return this.#ioFailure(`IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
   }
 
   async getFeature(reportId: number, length: number): Promise<Uint8Array> {
@@ -398,7 +414,7 @@ class IOKitHandle implements TransportHandle {
       bufPtr(lengthStorage),
     )
     if (rc !== kIOReturnSuccess) {
-      throw new Error(`[inkdeck] IOHIDDeviceGetReport failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+      await this.#ioFailure(`IOHIDDeviceGetReport failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
     }
     return buffer.subarray(0, Number(lengthStorage[0]))
   }

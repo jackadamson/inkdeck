@@ -10,6 +10,7 @@
 import { HarnessSession } from '../harness/session.js'
 import { loadMockExecFile } from '../harness/mockExec.js'
 import { loadApp, resolveHeadlessModel } from './headless.js'
+import type { Logger } from '../renderer/logger.js'
 import { createElement } from 'react'
 
 interface AgentFlags {
@@ -36,13 +37,13 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
     process.stdout.write(`${JSON.stringify(event)}\n`)
   }
 
-  // Framework/app stderr becomes log events so agents see it in-band; the
+  // Framework diagnostics become log events so agents see them in-band; the
   // real stderr still gets a copy for humans running the harness by hand.
-  const realError = console.error.bind(console)
-  console.error = (...args: unknown[]) => {
-    const line = args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ')
-    emit({ event: 'log', stream: 'stderr', line })
-    realError(...args)
+  const logger: Logger = {
+    error(line: string): void {
+      emit({ event: 'log', stream: 'stderr', line })
+      console.error(line)
+    },
   }
 
   const app = await loadApp(appPath)
@@ -59,6 +60,7 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
     },
     assetDir: app.appDir,
     fonts: app.config.fonts,
+    logger,
   })
 
   // The command being processed, so notifications emitted meanwhile can be
@@ -72,7 +74,7 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
   session.controller.onHandlerError((position, handler, error) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
     emit({ event: 'error', scope: handler === 'onLongPress' ? 'longPress' : 'press', position, message })
-    realError(`[inkdeck] [key ${position}] ${handler} failed: ${message}`)
+    console.error(`[inkdeck] [key ${position}] ${handler} failed: ${message}`)
   })
 
   emit({ event: 'ready', manifest: session.manifest() })

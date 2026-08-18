@@ -1,42 +1,30 @@
-// DeckController: owns the React root, walks the host tree on every commit,
-// diffs per-key scenes, rasterizes changed keys and pushes framed reports
-// through the Transport seam. Used identically by hardware and headless paths.
+// DeckController: owns the React root and orchestrates the pieces —
+// SceneBuilder (host tree → key scenes), FlushQueue (raster + push),
+// InputMachine (debounce + gestures), DeviceLink (handle lifecycle) — and
+// exposes the state hooks/manifest/harness read. Used identically by hardware
+// and headless paths.
 
 import { createElement, type ReactNode } from 'react'
 import { ConcurrentRoot } from 'react-reconciler/constants.js'
 import type { Model, ModelId } from '../device/models.js'
-import {
-  encodeBrightness,
-  encodeKeyImagePackets,
-  encodeReset,
-  parseInputReport,
-} from '../device/protocol.js'
-import { DeviceDisconnectedError, type TransportHandle } from '../transport/iface.js'
+import { parseInputReport } from '../device/protocol.js'
+import type { TransportHandle } from '../transport/iface.js'
 import { RasterEngine } from '../raster/takumi.js'
-import { collectText, errorTileScene, sceneHash, type SceneElement, type SceneNode } from '../raster/scene.js'
-import { serializeSvg } from '../raster/svg.js'
+import { collectText, sceneHash, type SceneNode } from '../raster/scene.js'
 import type { Clock } from './clock.js'
 import { ScopedClock, SystemClock } from './clock.js'
-import { registerExecScope, runInExecScope, type ExecInterceptor, type ExecScope } from './exec.js'
 import { DeckContext } from './context.js'
-import { InputMachine, type Gesture } from './input.js'
+import { DeviceLink } from './deviceLink.js'
+import { Emitter } from './emitter.js'
+import { registerExecScope, runInExecScope, type ExecInterceptor, type ExecScope } from './exec.js'
+import { FlushQueue, type FlushMetrics } from './flushQueue.js'
 import { reconciler } from './hostConfig.js'
-import {
-  createHostRoot,
-  findElements,
-  KEY_ERROR_TYPE,
-  KEY_TYPE,
-  DECK_TYPE,
-  type HostElement,
-  type HostNode,
-  type HostRoot,
-} from './hostTree.js'
+import { createHostRoot, type HostRoot } from './hostTree.js'
+import { InputMachine, type Gesture } from './input.js'
+import { describeError, stderrLogger, type Logger } from './logger.js'
+import { buildCommitScenes, type KeyDefinition } from './sceneBuilder.js'
 
-const DEFAULT_LONG_PRESS_MS = 500
-const INPUT_PRIORITY_WINDOW_MS = 500
 const METRICS_WINDOW_MS = 10_000
-// Long enough for the transport's removal polling (1 s) to flag an unplug.
-const DISCONNECT_GRACE_MS = 1200
 
 export interface DeckInfo {
   model: ModelId
@@ -57,22 +45,13 @@ export interface KeySnapshot {
   error: string | null
   hasPress: boolean
   hasLongPress: boolean
-  /** Hash of the last rasterized RGBA for this key (hex), if rasterized. */
+  /** Hash of the last pushed RGBA for this key (hex), if any. */
   imageHash: string | null
   rgba: Uint8Array | null
 }
 
-interface KeyEntry {
-  scene: SceneNode | null
+interface KeyEntry extends KeyDefinition {
   sceneHash: string
-  error: string | null
-  hasPress: boolean
-  hasLongPress: boolean
-  onPress?: () => unknown
-  onLongPress?: () => unknown
-  longPressMs: number
-  rgba: Uint8Array | null
-  rgbaHash: string | null
 }
 
 export interface ControllerOptions {
@@ -80,8 +59,11 @@ export interface ControllerOptions {
   handle: TransportHandle
   serial?: string
   clock?: Clock
-  /** Base directory for resolving app-relative img/font paths. */
+  /** Base directory for resolving app-relative img/font paths (when no raster is injected). */
   assetDir?: string
+  /** A pre-built raster engine (fonts loaded); default: new RasterEngine(assetDir). */
+  raster?: RasterEngine
+  logger?: Logger
   debug?: boolean
   /** Session-scoped exec() interception (mock table); null/undefined ⇒ real spawns. */
   execInterceptor?: ExecInterceptor | null
@@ -91,52 +73,56 @@ export class DeckController {
   readonly model: Model
   readonly clock: Clock
   readonly raster: RasterEngine
+  readonly logger: Logger
 
   readonly #execScope: ExecScope
+  readonly #releaseExecScope: () => void
   readonly #deckInfo: DeckInfo
-  #releaseExecScope: () => void
-  #handle: TransportHandle
-  #serial: string | null
-  #hostRoot: HostRoot
-  #fiberRoot: ReturnType<typeof reconciler.createContainer>
+  readonly #link: DeviceLink
+  readonly #queue: FlushQueue
+  readonly #input: InputMachine
+  readonly #hostRoot: HostRoot
+  readonly #fiberRoot: ReturnType<typeof reconciler.createContainer>
 
   #keys = new Map<number, KeyEntry>()
-  #pendingRaster = new Map<number, { scene: SceneNode | null }>()
-  #flushing = false
   #commitPending = false
-  #renderedListeners: Array<(changed: number[]) => void> = []
   #commitError: Error | null = null
-
-  #input: InputMachine
-  #pressedVersion = 0
-  #pressListeners = new Set<() => void>()
-  #handlerErrorListeners = new Set<(position: number, handler: string, error: unknown) => void>()
-
-  #brightness = 100
-  #brightnessListeners = new Set<() => void>()
-  #warnedPositions = new Set<number>()
   #closed = false
-  // Device unplugged: rendering state stays alive, pushes stop, one event
-  // fires — the CLI decides whether to wait for a replug (start/dev do).
-  #detached = false
-  #deviceLostListeners = new Set<() => void>()
 
-  // Debug render metrics (§6.2): counted per 10 s window, logged to stderr so
-  // performance regressions are visible as text an agent loop can read.
+  readonly #rendered = new Emitter<[changed: number[]]>()
+  readonly #pressed = new Emitter()
+  #pressedVersion = 0
+  readonly #handlerErrors = new Emitter<[position: number, handler: string, error: unknown]>()
+  #brightness = 100
+  readonly #brightnessChanged = new Emitter()
+  #warnedPositions = new Set<number>()
+
+  // Debug render metrics (§6.2): per 10 s window, logged so performance
+  // regressions are visible as text an agent loop can read.
   #metricsTimer: number | null = null
-  #metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 }
+  #metrics: FlushMetrics & { sceneSkips: number } = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 }
 
   constructor(options: ControllerOptions) {
     this.model = options.model
+    this.logger = options.logger ?? stderrLogger
     this.#execScope = { interceptor: options.execInterceptor ?? null }
     this.#releaseExecScope = registerExecScope(this.#execScope)
     // App code reached through timers (usePoller) runs inside this session's
     // exec scope, like render() and key handlers below.
     this.clock = new ScopedClock(options.clock ?? new SystemClock(), (fn) => this.runInScope(fn))
-    this.raster = new RasterEngine(options.assetDir)
-    this.#handle = options.handle
-    this.#serial = options.serial ?? null
-    this.#deckInfo = this.#buildDeckInfo()
+    this.raster = options.raster ?? new RasterEngine(options.assetDir)
+    this.#deckInfo = this.#buildDeckInfo(options.serial ?? null)
+
+    this.#link = new DeviceLink({
+      handle: options.handle,
+      logger: this.logger,
+      onInput: (report) => {
+        const states = parseInputReport(this.model, report)
+        if (states) this.#input.apply(states)
+      },
+    })
+    this.#link.onLost(() => this.#queue.clearPending()) // replaceHandle repaints everything anyway
+
     this.#input = new InputMachine({
       clock: this.clock,
       keyCount: this.keyCount,
@@ -147,7 +133,25 @@ export class DeckController {
       onGesture: (position, gesture) => this.#onGesture(position, gesture),
       onChange: () => {
         this.#pressedVersion++
-        for (const listener of [...this.#pressListeners]) listener()
+        this.#pressed.emit()
+      },
+    })
+
+    this.#queue = new FlushQueue({
+      model: this.model,
+      raster: this.raster,
+      clock: this.clock,
+      logger: this.logger,
+      metrics: this.#metrics,
+      handle: () => this.#link.handle,
+      paused: () => this.#closed || this.#link.detached,
+      lastInputAt: (position) => this.#input.lastInputAt(position),
+      onRound: (changed) => this.#rendered.emit(changed),
+      onDisconnected: () => this.#link.markLost(),
+      onRasterFailure: (position, message) => {
+        // Recorded on the entry so check/render/manifest see it structurally.
+        const entry = this.#keys.get(position)
+        if (entry) entry.error = `raster failed: ${message}`
       },
     })
 
@@ -165,14 +169,12 @@ export class DeckController {
         this.#commitError = error instanceof Error ? error : new Error(String(error))
       },
       (error) => {
-        console.error(`[inkdeck] caught error: ${error instanceof Error ? error.message : error}`)
+        this.logger.error(`[inkdeck] caught error: ${error instanceof Error ? error.message : error}`)
       },
       () => {},
       () => {},
       null,
     )
-
-    this.#attachHandle(this.#handle)
 
     if (options.debug) {
       this.#metricsTimer = this.clock.setInterval(() => this.#logMetrics(), METRICS_WINDOW_MS)
@@ -185,10 +187,10 @@ export class DeckController {
     if (considered === 0) return // quiet window — nothing to report
     const pct = (n: number) => `${Math.round((n / considered) * 100)}%`
     const avg = m.flushes > 0 ? (m.renderMsTotal / m.flushes).toFixed(1) : '0'
-    console.error(
-      `[inkdeck] metrics(10s): flushes=${m.flushes} scene-skip=${pct(m.sceneSkips)} dedup=${pct(m.dedupSkips)} render avg=${avg}ms peak=${m.renderMsPeak.toFixed(1)}ms`,
+    this.logger.error(
+      `[inkdeck] metrics(10s): flushes=${m.flushes} scene-skip=${pct(m.sceneSkips)} dedup=${pct(m.dedupSkips)} round avg=${avg}ms/key peak=${m.renderMsPeak.toFixed(1)}ms`,
     )
-    this.#metrics = { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 }
+    Object.assign(m, { flushes: 0, sceneSkips: 0, dedupSkips: 0, renderMsTotal: 0, renderMsPeak: 0 })
   }
 
   get keyCount(): number {
@@ -200,83 +202,55 @@ export class DeckController {
     return this.#deckInfo
   }
 
-  #buildDeckInfo(): DeckInfo {
+  #buildDeckInfo(serial: string | null): DeckInfo {
     const columns = this.model.columns
     return Object.freeze({
       model: this.model.id,
       columns,
       rows: this.model.rows,
       keyCount: this.keyCount,
-      serial: this.#serial,
+      serial,
       coordsOf: (position: number) => ({ row: Math.floor(position / columns), col: position % columns }),
       positionOf: (row: number, col: number) => row * columns + col,
     })
   }
 
+  /** Reset on startup (§5.2) so stale images from a previous process clear, then brightness. */
   async start(): Promise<void> {
-    // Reset on startup (§5.2) so stale images from a previous process clear.
-    await this.#handle.sendFeature(encodeReset())
-    await this.#handle.sendFeature(encodeBrightness(this.#brightness))
-  }
-
-  // ---- device lifecycle (unplug / replug) ----
-
-  get detached(): boolean {
-    return this.#detached
-  }
-
-  /** Fires once per unplug. Pair with replaceHandle() after a replug. */
-  onDeviceLost(listener: () => void): () => void {
-    this.#deviceLostListeners.add(listener)
-    return () => this.#deviceLostListeners.delete(listener)
-  }
-
-  #attachHandle(handle: TransportHandle): void {
-    handle.onInput((report) => {
-      if (handle !== this.#handle) return // stale handle after a replug
-      this.#onInputReport(report)
-    })
-    handle.onDisconnect(() => {
-      if (handle !== this.#handle) return
-      this.#onDeviceRemoved()
-    })
-  }
-
-  #onDeviceRemoved(): void {
-    if (this.#closed || this.#detached) return
-    this.#detached = true
-    this.#pendingRaster.clear() // replaceHandle repaints everything anyway
-    for (const listener of [...this.#deviceLostListeners]) listener()
-  }
-
-  /**
-   * Reattach after a replug: close the old handle, wire the new one, resend
-   * reset + brightness, and repaint every mounted key from its cached scene.
-   */
-  async replaceHandle(handle: TransportHandle): Promise<void> {
-    if (this.#closed) throw new Error('[inkdeck] controller is shut down')
-    await this.#handle.close().catch(() => {})
-    this.#handle = handle
-    this.#attachHandle(handle)
-    this.#detached = false
-    try {
-      await this.start()
-    } catch (error) {
-      // The deck dropped again mid-handshake: stay detached (pushes stay
-      // silent) so the caller can acquire it once more; the caller decides.
-      this.#detached = true
-      throw error
-    }
-    for (const [position, entry] of this.#keys) {
-      entry.rgbaHash = null // force the push past output dedup
-      this.#scheduleRaster(position, entry.scene)
-    }
+    await this.#link.handshake(this.#brightness)
   }
 
   /** Run app-facing work inside this session's exec scope. */
   runInScope<T>(fn: () => T): T {
     return runInExecScope(this.#execScope, fn)
   }
+
+  // ---- device lifecycle (unplug / replug) ----
+
+  get detached(): boolean {
+    return this.#link.detached
+  }
+
+  /** Fires once per unplug. Pair with replaceHandle() after a replug. */
+  onDeviceLost(listener: () => void): () => void {
+    return this.#link.onLost(listener)
+  }
+
+  /**
+   * Reattach after a replug: reset + brightness on the new handle, then
+   * repaint every mounted key from its cached scene. If the handshake fails
+   * the controller stays detached and the error propagates.
+   */
+  async replaceHandle(handle: TransportHandle): Promise<void> {
+    if (this.#closed) throw new Error('[inkdeck] controller is shut down')
+    await this.#link.replace(handle, this.#brightness)
+    for (const [position, entry] of this.#keys) {
+      this.#queue.invalidate(position) // force the push past output dedup
+      this.#queue.schedule(position, entry.scene)
+    }
+  }
+
+  // ---- render / settle ----
 
   /** Render the app element. Errors surface through settled(). */
   render(element: ReactNode): void {
@@ -300,7 +274,7 @@ export class DeckController {
     let idleChecks = 0
     while (idleChecks < 2) {
       this.#throwCommitError()
-      const busy = this.#commitPending || this.#flushing || this.#pendingRaster.size > 0
+      const busy = this.#commitPending || this.#queue.busy
       idleChecks = busy ? 0 : idleChecks + 1
       await sleep(5)
     }
@@ -316,30 +290,30 @@ export class DeckController {
   }
 
   onRendered(listener: (changed: number[]) => void): () => void {
-    this.#renderedListeners.push(listener)
-    return () => {
-      this.#renderedListeners = this.#renderedListeners.filter((l) => l !== listener)
-    }
+    return this.#rendered.on(listener)
   }
 
-  /** Last rasterized RGBA for one key (null if never rasterized / unmounted). */
+  // ---- reads (manifest, simulator) ----
+
+  /** Last pushed RGBA for one key (null if never pushed / unmounted). */
   keyRgba(position: number): Uint8Array | null {
-    return this.#keys.get(position)?.rgba ?? null
+    return this.#queue.frame(position)?.rgba ?? null
   }
 
   /** Structural + pixel snapshot of every mounted key (manifest source, §11.1). */
   keySnapshots(): KeySnapshot[] {
     const out: KeySnapshot[] = []
     for (const [position, entry] of [...this.#keys.entries()].sort((a, b) => a[0] - b[0])) {
+      const frame = this.#queue.frame(position)
       out.push({
         position,
         scene: entry.scene,
         text: entry.error ? [] : collectText(entry.scene),
         error: entry.error,
-        hasPress: entry.hasPress,
-        hasLongPress: entry.hasLongPress,
-        imageHash: entry.rgbaHash,
-        rgba: entry.rgba,
+        hasPress: entry.onPress !== undefined,
+        hasLongPress: entry.onLongPress !== undefined,
+        imageHash: frame?.hash ?? null,
+        rgba: frame?.rgba ?? null,
       })
     }
     return out
@@ -355,19 +329,12 @@ export class DeckController {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)))
     if (clamped === this.#brightness) return
     this.#brightness = clamped
-    // While detached only the state updates; replaceHandle resends it.
-    if (!this.#detached) {
-      void this.#handle.sendFeature(encodeBrightness(clamped)).catch((error) => {
-        if (error instanceof DeviceDisconnectedError) return
-        console.error(`[inkdeck] failed to set brightness: ${error}`)
-      })
-    }
-    for (const listener of this.#brightnessListeners) listener()
+    this.#link.sendBrightness(clamped) // silent while detached; replaceHandle resends
+    this.#brightnessChanged.emit()
   }
 
   subscribeBrightness(listener: () => void): () => void {
-    this.#brightnessListeners.add(listener)
-    return () => this.#brightnessListeners.delete(listener)
+    return this.#brightnessChanged.on(listener)
   }
 
   // ---- key press state (useKeyState) ----
@@ -381,17 +348,14 @@ export class DeckController {
   }
 
   subscribePressed(listener: () => void): () => void {
-    this.#pressListeners.add(listener)
-    return () => {
-      this.#pressListeners.delete(listener)
-    }
+    return this.#pressed.on(listener)
   }
 
   // ---- commit walk ----
 
   #onCommit(): void {
     try {
-      this.#walkCommit()
+      this.#syncKeys()
     } catch (error) {
       // Recorded rather than rethrown into React's commit phase; render/check
       // surface it via settled() and exit non-zero (§10).
@@ -399,256 +363,43 @@ export class DeckController {
     }
   }
 
-  #walkCommit(): void {
-    const decks = findElements(this.#hostRoot.children, DECK_TYPE)
-    if (decks.length === 0) {
-      if (this.#hostRoot.children.length > 0) {
-        throw new Error(
-          '[inkdeck] the app must render a <Deck> at its root (import { Deck } from "@jackadamson/inkdeck")',
-        )
-      }
-      // Empty tree (unmounted) — clear all keys.
-      this.#syncKeys(new Map())
-      return
+  #syncKeys(): void {
+    const commit = buildCommitScenes(this.#hostRoot, this.keyCount)
+    if (commit.brightness !== null) this.setBrightness(commit.brightness)
+    for (const position of commit.outOfRange) {
+      if (this.#warnedPositions.has(position)) continue
+      this.#warnedPositions.add(position)
+      this.logger.error(
+        `[inkdeck] <Key position={${position}}> is beyond this ${this.model.id}'s ${this.keyCount} keys (0-${this.keyCount - 1}) — not rendered. Lower the position or run on a larger model.`,
+      )
     }
-    if (decks.length > 1) {
-      throw new Error('[inkdeck] only one <Deck> may be mounted at a time')
-    }
-    const deck = decks[0]
 
-    const brightness = deck.props.brightness
-    if (typeof brightness === 'number') this.setBrightness(brightness)
-
-    const keyElements = findElements(deck.children, KEY_TYPE)
-    const byPosition = new Map<number, HostElement>()
-    for (const key of keyElements) {
-      if (key.hidden) continue
-      const position = Number(key.props.position)
-      if (!Number.isInteger(position) || position < 0) {
-        throw new Error(`[inkdeck] <Key position={${String(key.props.position)}}> — position must be a non-negative integer`)
-      }
-      const existing = byPosition.get(position)
-      if (existing) {
-        // Last-wins is a debugging nightmare on a physical grid (§7.1).
-        throw new Error(
-          `[inkdeck] two <Key> elements are mounted with position={${position}}.\n\nFirst:\n${existing.props.stack}\n\nSecond:\n${key.props.stack}`,
-        )
-      }
-      if (position >= this.keyCount) {
-        if (!this.#warnedPositions.has(position)) {
-          this.#warnedPositions.add(position)
-          console.error(
-            `[inkdeck] <Key position={${position}}> is beyond this ${this.model.id}'s ${this.keyCount} keys (0-${this.keyCount - 1}) — not rendered. Lower the position or run on a larger model.`,
-          )
-        }
-        continue
-      }
-      byPosition.set(position, key)
-    }
-    this.#syncKeys(byPosition)
-  }
-
-  #syncKeys(byPosition: Map<number, HostElement>): void {
     // Unmounted keys are cleared to black (§7.1).
     for (const position of [...this.#keys.keys()]) {
-      if (!byPosition.has(position)) {
+      if (!commit.keys.has(position)) {
         this.#keys.delete(position)
-        this.#scheduleRaster(position, null)
+        this.#queue.forget(position)
+        this.#queue.schedule(position, null)
       }
     }
 
-    for (const [position, element] of byPosition) {
-      const errorElement = findElements(element.children, KEY_ERROR_TYPE)[0]
-      const scene = errorElement
-        ? errorTileScene()
-        : this.#buildScene(element.children)
-      const hash = sceneHash(scene)
+    for (const [position, definition] of commit.keys) {
+      const hash = sceneHash(definition.scene)
       const prev = this.#keys.get(position)
-      const entry: KeyEntry = {
-        scene,
-        sceneHash: hash,
-        error: errorElement ? String(errorElement.props.message ?? 'render error') : null,
-        hasPress: typeof element.props.onPress === 'function',
-        hasLongPress: typeof element.props.onLongPress === 'function',
-        onPress: element.props.onPress as KeyEntry['onPress'],
-        onLongPress: element.props.onLongPress as KeyEntry['onLongPress'],
-        longPressMs:
-          typeof element.props.longPressMs === 'number'
-            ? element.props.longPressMs
-            : DEFAULT_LONG_PRESS_MS,
-        rgba: prev?.rgba ?? null,
-        rgbaHash: prev?.rgbaHash ?? null,
-      }
-      this.#keys.set(position, entry)
+      this.#keys.set(position, { ...definition, sceneHash: hash })
       // Scene hash unchanged ⇒ no raster work for that key (§6.2 step 1).
       if (!prev || prev.sceneHash !== hash) {
-        this.#scheduleRaster(position, scene)
+        this.#queue.schedule(position, definition.scene)
       } else {
         this.#metrics.sceneSkips++
-      }
-    }
-  }
-
-  #buildScene(children: HostNode[]): SceneNode | null {
-    const nodes = children
-      .filter((c) => !c.hidden)
-      .map((c) => this.#toScene(c))
-      .filter((c): c is SceneNode => c !== null)
-    if (nodes.length === 0) return null
-    if (nodes.length === 1) return nodes[0]
-    return { kind: 'element', tag: 'div', children: nodes }
-  }
-
-  #toScene(node: HostNode): SceneNode | null {
-    if (node.kind === 'text') {
-      return { kind: 'text', text: node.text }
-    }
-    const el: SceneElement = {
-      kind: 'element',
-      tag: node.type,
-      children: [],
-    }
-    const className = node.props.className
-    if (typeof className === 'string' && className.length > 0) el.className = className
-    const style = node.props.style
-    if (style && typeof style === 'object') el.style = style as Record<string, unknown>
-    if (node.type === 'img') {
-      el.src = typeof node.props.src === 'string' ? node.props.src : undefined
-      return el
-    }
-    if (node.type === 'svg') {
-      el.svg = serializeSvg(node)
-      return el
-    }
-    el.children = node.children
-      .filter((c) => !c.hidden)
-      .map((c) => this.#toScene(c))
-      .filter((c): c is SceneNode => c !== null)
-    return el
-  }
-
-  // ---- raster + flush (§6.2) ----
-
-  #scheduleRaster(position: number, scene: SceneNode | null): void {
-    if (this.#closed) return // shutdown unmount clears via reset instead
-    if (this.#detached) return // scenes stay cached; replaceHandle repaints all
-    // Coalesced: three commits while a JPEG is in flight ⇒ only the newest
-    // scene renders (§6.2 step 3).
-    this.#pendingRaster.set(position, { scene })
-    void this.#flushLoop()
-  }
-
-  async #flushLoop(): Promise<void> {
-    if (this.#flushing) return
-    this.#flushing = true
-    try {
-      // Rounds: each pass drains the keys pending at its start, then emits
-      // one `rendered` for the round, so listeners (agent, simulator, dev)
-      // keep up under continuous animation instead of waiting for a full
-      // drain that may never come.
-      while (this.#pendingRaster.size > 0 && !this.#closed && !this.#detached) {
-        const changed = new Set<number>()
-        const roundSize = this.#pendingRaster.size
-        for (let i = 0; i < roundSize && this.#pendingRaster.size > 0 && !this.#closed && !this.#detached; i++) {
-          const position = this.#nextFlushPosition()
-          const { scene } = this.#pendingRaster.get(position)!
-          this.#pendingRaster.delete(position)
-          try {
-            const didChange = await this.#rasterAndPush(position, scene)
-            if (didChange) changed.add(position)
-          } catch (error) {
-            if (error instanceof DeviceDisconnectedError || this.#detached) {
-              this.#pendingRaster.clear() // unplugged mid-flush: one event, no per-key flood
-              break
-            }
-            // A failed device write may be an unplug the transport has not
-            // flagged yet (removal detection polls, §DECISIONS): give detection
-            // one cycle before treating it as a real per-key failure.
-            if (error instanceof Error && error.message.includes('IOHIDDeviceSetReport')) {
-              await new Promise((resolve) => setTimeout(resolve, DISCONNECT_GRACE_MS))
-              if (this.#detached) {
-                this.#pendingRaster.clear()
-                break
-              }
-            }
-            const message = error instanceof Error ? error.message : String(error)
-            console.error(`[inkdeck] [key ${position}] raster/push failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-            if (await this.#paintRasterFailure(position, message)) changed.add(position)
-          }
-        }
-        if (changed.size > 0) {
-          const sorted = [...changed].sort((a, b) => a - b)
-          for (const listener of [...this.#renderedListeners]) listener(sorted)
+        if (prev.error?.startsWith('raster failed')) {
+          this.#keys.get(position)!.error = prev.error // same scene, still unrasterizable
         }
       }
-    } finally {
-      this.#flushing = false
     }
   }
 
-  /**
-   * A scene that cannot be rasterized (missing image, bad SVG, …) is recorded
-   * on the entry — so `check`/the manifest see it structurally — and the
-   * error tile is painted so the key does not silently keep stale pixels.
-   */
-  async #paintRasterFailure(position: number, message: string): Promise<boolean> {
-    const entry = this.#keys.get(position)
-    if (!entry) return false
-    entry.error = `raster failed: ${message}`
-    try {
-      return await this.#rasterAndPush(position, errorTileScene())
-    } catch {
-      return false
-    }
-  }
-
-  /** Slots whose change was caused by user input in the last 500 ms flush first (§6.2). */
-  #nextFlushPosition(): number {
-    const now = this.clock.now()
-    let best: number | null = null
-    for (const position of this.#pendingRaster.keys()) {
-      if (now - this.#input.lastInputAt(position) <= INPUT_PRIORITY_WINDOW_MS) {
-        return position
-      }
-      if (best === null) best = position
-    }
-    return best!
-  }
-
-  async #rasterAndPush(position: number, scene: SceneNode | null): Promise<boolean> {
-    const started = performance.now()
-    const rgba = await this.raster.renderScene(scene, this.model)
-    const rgbaHash = Bun.hash(rgba).toString(16)
-    const entry = this.#keys.get(position)
-    // Output dedup: identical pixels ⇒ skip encoding and the HID write (§6.2 step 2).
-    if (entry?.rgbaHash === rgbaHash) {
-      this.#metrics.dedupSkips++
-      return false
-    }
-    const jpeg = await this.raster.rgbaToJpeg(rgba, this.model)
-    for (const packet of encodeKeyImagePackets(this.model, position, jpeg)) {
-      await this.#handle.writeOutput(packet)
-    }
-    // Recorded only after the last packet succeeded: a failed write must not
-    // be deduped away as "already on the device".
-    if (entry) {
-      entry.rgba = rgba
-      entry.rgbaHash = rgbaHash
-    }
-    const elapsed = performance.now() - started
-    this.#metrics.flushes++
-    this.#metrics.renderMsTotal += elapsed
-    this.#metrics.renderMsPeak = Math.max(this.#metrics.renderMsPeak, elapsed)
-    return true
-  }
-
-  // ---- input (§5.2 input reports → key events) ----
-
-  #onInputReport(report: Uint8Array): void {
-    const states = parseInputReport(this.model, report)
-    if (!states) return
-    this.#input.apply(states)
-  }
+  // ---- input gestures → handlers ----
 
   #onGesture(position: number, gesture: Gesture): void {
     const entry = this.#keys.get(position)
@@ -663,19 +414,18 @@ export class DeckController {
   /**
    * Handler failures (thrown or rejected onPress/onLongPress) go to listeners
    * when any are registered — the agent harness turns them into structured
-   * error events — and to stderr otherwise (§10).
+   * error events — and to the logger otherwise (§10).
    */
   onHandlerError(listener: (position: number, handler: string, error: unknown) => void): () => void {
-    this.#handlerErrorListeners.add(listener)
-    return () => this.#handlerErrorListeners.delete(listener)
+    return this.#handlerErrors.on(listener)
   }
 
   #reportHandlerError(position: number, name: string, error: unknown): void {
-    if (this.#handlerErrorListeners.size > 0) {
-      for (const listener of [...this.#handlerErrorListeners]) listener(position, name, error)
+    if (this.#handlerErrors.size > 0) {
+      this.#handlerErrors.emit(position, name, error)
       return
     }
-    console.error(`[inkdeck] [key ${position}] ${name} failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    this.logger.error(`[inkdeck] [key ${position}] ${name} failed: ${describeError(error)}`)
   }
 
   #invokeHandler(position: number, name: string, handler: () => unknown): void {
@@ -701,11 +451,6 @@ export class DeckController {
     this.#input.dispose()
     this.#releaseExecScope()
     reconciler.updateContainer(null, this.#fiberRoot, null, null)
-    try {
-      await this.#handle.sendFeature(encodeReset())
-    } catch {
-      // Device may already be gone; reset is best-effort on the way out.
-    }
-    await this.#handle.close()
+    await this.#link.close()
   }
 }

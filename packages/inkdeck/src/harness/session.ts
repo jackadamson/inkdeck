@@ -11,6 +11,7 @@ import { VirtualTransport, type VirtualHandle } from '../transport/virtual.js'
 import { DeckController } from '../renderer/controller.js'
 import { FrozenClock, SystemClock, type Clock } from '../renderer/clock.js'
 import { KEY_DEBOUNCE_MS } from '../renderer/input.js'
+import type { Logger } from '../renderer/logger.js'
 import { buildManifest, type Manifest } from './manifest.js'
 import { createMockExecInterceptor, type MockExecConfig } from './mockExec.js'
 
@@ -31,6 +32,8 @@ export interface HarnessOptions {
   /** Base directory for app-relative img/font paths. */
   assetDir?: string
   fonts?: string[]
+  /** Framework diagnostics sink (default: stderr). */
+  logger?: Logger
 }
 
 export class HarnessSession {
@@ -62,6 +65,7 @@ export class HarnessSession {
       clock,
       assetDir: options.assetDir,
       execInterceptor,
+      logger: options.logger,
     })
     try {
       if (options.fonts?.length && options.assetDir) {

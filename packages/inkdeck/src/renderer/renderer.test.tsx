@@ -11,13 +11,14 @@ import { DeckController } from './controller.js'
 import { buildManifest } from '../harness/manifest.js'
 import type { Clock } from './clock.js'
 import { FrozenClock } from './clock.js'
+import type { Logger } from './logger.js'
 
 const mk2 = modelById('mk2')!
 
-async function mount(element: React.ReactNode, clock?: Clock) {
+async function mount(element: React.ReactNode, clock?: Clock, logger?: Logger) {
   const transport = new VirtualTransport(mk2)
   const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, clock })
+  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, clock, logger })
   await controller.start()
   controller.render(element)
   await controller.settled()
@@ -125,28 +126,24 @@ describe('headless renderer', () => {
 
   test('out-of-range position warns once and is not rendered', async () => {
     const errors: string[] = []
-    const original = console.error
-    console.error = (msg: unknown) => errors.push(String(msg))
-    try {
-      const { controller, handle } = await mount(
-        <Deck>
-          <Key position={99}>
-            <span>ghost</span>
-          </Key>
-          <Key position={0}>
-            <span>ok</span>
-          </Key>
-        </Deck>,
-      )
-      expect(handle.keyImages.has(0)).toBe(true)
-      const warnings = errors.filter((e) => e.includes('position={99}'))
-      expect(warnings.length).toBe(1)
-      const manifest = buildManifest(controller)
-      expect(manifest.keys.some((k) => k.position === 99)).toBe(false)
-      await controller.shutdown()
-    } finally {
-      console.error = original
-    }
+    const { controller, handle } = await mount(
+      <Deck>
+        <Key position={99}>
+          <span>ghost</span>
+        </Key>
+        <Key position={0}>
+          <span>ok</span>
+        </Key>
+      </Deck>,
+      undefined,
+      { error: (line) => errors.push(line) },
+    )
+    expect(handle.keyImages.has(0)).toBe(true)
+    const warnings = errors.filter((e) => e.includes('position={99}'))
+    expect(warnings.length).toBe(1)
+    const manifest = buildManifest(controller)
+    expect(manifest.keys.some((k) => k.position === 99)).toBe(false)
+    await controller.shutdown()
   })
 
   test('press toggles state through the virtual transport; pixels update', async () => {

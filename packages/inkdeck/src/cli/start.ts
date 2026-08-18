@@ -8,7 +8,13 @@ import { createElement, type ComponentType } from 'react'
 import { hardwareTransport } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
 import { DeckController } from '../renderer/controller.js'
-import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from '../transport/iface.js'
+import {
+  DeviceDisconnectedError,
+  TransportIOError,
+  type DeviceInfo,
+  type Transport,
+  type TransportHandle,
+} from '../transport/iface.js'
 import { loadApp } from './headless.js'
 import { DEV_BUNDLE_NAME, loadAppBundle, removeAppBundle } from './devBundle.js'
 
@@ -21,10 +27,9 @@ export interface StartOptions {
 const DEVICE_POLL_MS = 1000
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** Errors that mean "the device went away", as opposed to a bug. */
+/** Errors that mean "the device went away / rejected us", as opposed to a bug. */
 function isDeviceError(error: unknown): boolean {
-  if (error instanceof DeviceDisconnectedError) return true
-  return error instanceof Error && /IOHIDDevice(Set|Get)Report|IOKit handle is closed/.test(error.message)
+  return error instanceof DeviceDisconnectedError || error instanceof TransportIOError
 }
 
 /**

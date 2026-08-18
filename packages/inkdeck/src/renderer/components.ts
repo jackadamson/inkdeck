@@ -2,6 +2,7 @@
 // elements; content inside a <Key> is ordinary JSX (div/span/p/img/svg).
 
 import { Component, createElement, useMemo, type ReactNode } from 'react'
+import { DeckContext } from './context.js'
 import { DECK_TYPE, KEY_ERROR_TYPE, KEY_TYPE } from './hostTree.js'
 
 export interface DeckProps {
@@ -56,6 +57,8 @@ interface BoundaryState {
  * keeps working.
  */
 class KeyBoundary extends Component<KeyBoundaryProps, BoundaryState> {
+  static contextType = DeckContext
+  declare context: React.ContextType<typeof DeckContext>
   state: BoundaryState = { error: null }
 
   static getDerivedStateFromError(error: Error): BoundaryState {
@@ -63,9 +66,9 @@ class KeyBoundary extends Component<KeyBoundaryProps, BoundaryState> {
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string | null }): void {
-    console.error(
-      `[inkdeck] [key ${this.props.position}] render error: ${error.message}${info.componentStack ?? ''}`,
-    )
+    const line = `[inkdeck] [key ${this.props.position}] render error: ${error.message}${info.componentStack ?? ''}`
+    if (this.context) this.context.logger.error(line)
+    else console.error(line)
   }
 
   render(): ReactNode {

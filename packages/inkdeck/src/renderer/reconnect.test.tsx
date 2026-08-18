@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { modelById } from '../device/models.js'
 import { VirtualTransport } from '../transport/virtual.js'
 import { DeviceDisconnectedError } from '../transport/iface.js'
+import type { Logger } from './logger.js'
 import { Deck, Key } from './components.js'
 import { DeckController } from './controller.js'
 
@@ -25,10 +26,10 @@ function TwoKeys() {
   )
 }
 
-async function mountTwoKeys() {
+async function mountTwoKeys(logger?: Logger) {
   const transport = new VirtualTransport(mk2)
   const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial })
+  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, logger })
   await controller.start()
   controller.render(<TwoKeys />)
   await controller.settled()
@@ -37,26 +38,20 @@ async function mountTwoKeys() {
 
 describe('device unplug/replug', () => {
   test('disconnect fires onDeviceLost once and silences pushes — no error flood', async () => {
-    const { controller, handle } = await mountTwoKeys()
+    const errors: string[] = []
+    const { controller, handle } = await mountTwoKeys({ error: (line) => errors.push(line) })
     let lost = 0
     controller.onDeviceLost(() => lost++)
 
-    const errors: string[] = []
-    const original = console.error
-    console.error = (...args: unknown[]) => errors.push(args.join(' '))
-    try {
-      handle.simulateDisconnect()
-      expect(lost).toBe(1)
-      expect(controller.detached).toBe(true)
+    handle.simulateDisconnect()
+    expect(lost).toBe(1)
+    expect(controller.detached).toBe(true)
 
-      // App keeps rendering while detached (press via state change): no
-      // writes, no "raster/push failed" spam.
-      controller.render(<TwoKeys key="force-remount" />)
-      await controller.settled()
-    } finally {
-      console.error = original
-    }
-    expect(errors.filter((e) => e.includes('raster/push failed'))).toEqual([])
+    // App keeps rendering while detached (press via state change): no
+    // writes, no "push failed" spam.
+    controller.render(<TwoKeys key="force-remount" />)
+    await controller.settled()
+    expect(errors.filter((e) => e.includes('failed'))).toEqual([])
     await controller.shutdown()
   })
 

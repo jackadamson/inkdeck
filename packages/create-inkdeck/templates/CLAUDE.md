@@ -60,7 +60,7 @@ Events:
 {"event":"state","manifest":{…},"id":…}                   // ack: press/release/tap/advanceTime/snapshot
 {"event":"frames","dir":"./out","keys":1,"id":…}          // ack: writeFrames
 {"event":"error","scope":"press","position":0,"message":"…","id":…}
-{"event":"log","stream":"stderr","line":"…"}
+{"event":"log","stream":"stderr","line":"…"}                // framework diagnostics ([inkdeck] …); app console output stays on the process stderr
 {"event":"exit","id":…}
 ```
 
