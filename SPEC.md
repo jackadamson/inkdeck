@@ -2,7 +2,9 @@
 
 **inkdeck** (`@jackadamson/inkdeck`) is a custom React renderer whose render target is an Elgato Stream Deck. Think **Ink, but the "terminal" is a grid of physical LCD keys**. Developers who know React should be able to build personal workflow tools (mute toggles, Docker dashboards, deploy buttons) in a single `app.tsx`, with hot reload, a browser simulator, and a first-class feedback loop for coding agents.
 
-This document is the source of truth for scope, constraints, and behavior. Sections marked **[P1]** are post-MVP; everything else is v1.
+This document is the original design specification (scope, constraints, intended behavior). Sections marked **[P1]** are post-MVP; everything else is v1.
+
+> **Status (2026-08-18):** the implementation has deliberately drifted in places (e.g. `--simulate --model`, six-op transport handle, `check`'s compiler resolution, press semantics with `onLongPress`, `config.defaultModel`, Takumi-only encoding). `DECISIONS.md` records each delta and why; `README.md` and `skills/inkdeck/SKILL.md` describe what actually ships. Read this file as the design rationale, not as the API reference.
 
 ---
 
