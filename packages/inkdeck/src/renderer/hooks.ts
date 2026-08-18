@@ -41,7 +41,7 @@ export function usePoller(fn: () => void | Promise<void>, ms: number): void {
   useEffect(() => {
     const run = (): void => {
       try {
-        const result = fn()
+        const result = controller.runInScope(fn)
         if (result && typeof result.then === 'function') {
           void result.catch((error) => {
             console.error(`[inkdeck] usePoller callback failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)

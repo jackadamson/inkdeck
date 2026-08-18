@@ -15,7 +15,8 @@ import { DeviceDisconnectedError, type TransportHandle } from '../transport/ifac
 import { RasterEngine } from '../raster/takumi.js'
 import { collectText, sceneHash, type SceneElement, type SceneNode } from '../raster/scene.js'
 import type { Clock } from './clock.js'
-import { SystemClock } from './clock.js'
+import { ScopedClock, SystemClock } from './clock.js'
+import { registerExecScope, runInExecScope, type ExecInterceptor, type ExecScope } from './exec.js'
 import { DeckContext } from './context.js'
 import { InputMachine, type Gesture } from './input.js'
 import { reconciler } from './hostConfig.js'
@@ -77,6 +78,8 @@ export interface ControllerOptions {
   /** Base directory for resolving app-relative img/font paths. */
   assetDir?: string
   debug?: boolean
+  /** Session-scoped exec() interception (mock table); null/undefined ⇒ real spawns. */
+  execInterceptor?: ExecInterceptor | null
 }
 
 export class DeckController {
@@ -84,6 +87,8 @@ export class DeckController {
   readonly clock: Clock
   readonly raster: RasterEngine
 
+  readonly #execScope: ExecScope
+  #releaseExecScope: () => void
   #handle: TransportHandle
   #serial: string | null
   #hostRoot: HostRoot
@@ -117,7 +122,11 @@ export class DeckController {
 
   constructor(options: ControllerOptions) {
     this.model = options.model
-    this.clock = options.clock ?? new SystemClock()
+    this.#execScope = { interceptor: options.execInterceptor ?? null }
+    this.#releaseExecScope = registerExecScope(this.#execScope)
+    // App code reached through timers (usePoller) runs inside this session's
+    // exec scope, like render() and key handlers below.
+    this.clock = new ScopedClock(options.clock ?? new SystemClock(), (fn) => this.runInScope(fn))
     this.raster = new RasterEngine(options.assetDir)
     this.#handle = options.handle
     this.#serial = options.serial ?? null
@@ -242,13 +251,20 @@ export class DeckController {
     }
   }
 
+  /** Run app-facing work inside this session's exec scope. */
+  runInScope<T>(fn: () => T): T {
+    return runInExecScope(this.#execScope, fn)
+  }
+
   /** Render the app element. Errors surface through settled(). */
   render(element: ReactNode): void {
     this.#commitPending = true
     this.#commitError = null // a fresh render gets a fresh verdict
     const wrapped = createElement(DeckContext.Provider, { value: this }, element)
-    reconciler.updateContainer(wrapped, this.#fiberRoot, null, () => {
-      this.#commitPending = false
+    this.runInScope(() => {
+      reconciler.updateContainer(wrapped, this.#fiberRoot, null, () => {
+        this.#commitPending = false
+      })
     })
   }
 
@@ -637,7 +653,7 @@ export class DeckController {
 
   #invokeHandler(position: number, name: string, handler: () => unknown): void {
     try {
-      const result = handler()
+      const result = this.runInScope(handler)
       if (result && typeof (result as Promise<unknown>).then === 'function') {
         void (result as Promise<unknown>).catch((error) => {
           this.#reportHandlerError(position, name, error)
@@ -656,6 +672,7 @@ export class DeckController {
     this.#closed = true
     if (this.#metricsTimer !== null) this.clock.clearInterval(this.#metricsTimer)
     this.#input.dispose()
+    this.#releaseExecScope()
     reconciler.updateContainer(null, this.#fiberRoot, null, null)
     try {
       await this.#handle.sendFeature(encodeReset())

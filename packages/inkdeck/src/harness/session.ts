@@ -11,7 +11,6 @@ import { VirtualTransport, type VirtualHandle } from '../transport/virtual.js'
 import { DeckController } from '../renderer/controller.js'
 import { FrozenClock, SystemClock, type Clock } from '../renderer/clock.js'
 import { KEY_DEBOUNCE_MS } from '../renderer/input.js'
-import { setExecInterceptor } from '../renderer/exec.js'
 import { buildManifest, type Manifest } from './manifest.js'
 import { createMockExecInterceptor, type MockExecConfig } from './mockExec.js'
 
@@ -40,35 +39,20 @@ export class HarnessSession {
   readonly transport: VirtualTransport
   readonly clock: Clock
   readonly frozen: boolean
-  #ownsInterceptor = false
 
-  private constructor(
-    controller: DeckController,
-    transport: VirtualTransport,
-    clock: Clock,
-    frozen: boolean,
-    ownsInterceptor: boolean,
-  ) {
+  private constructor(controller: DeckController, transport: VirtualTransport, clock: Clock, frozen: boolean) {
     this.controller = controller
     this.transport = transport
     this.handle = transport.handle
     this.clock = clock
     this.frozen = frozen
-    this.#ownsInterceptor = ownsInterceptor
   }
 
   static async start(options: HarnessOptions): Promise<HarnessSession> {
     const clock = options.freezeTime ? new FrozenClock() : new SystemClock()
-    let ownsInterceptor = false
-    if (options.mockExec) {
-      setExecInterceptor(
-        createMockExecInterceptor(options.mockExec, {
-          clock,
-          onUnmatched: options.onUnmatchedExec,
-        }),
-      )
-      ownsInterceptor = true
-    }
+    const execInterceptor = options.mockExec
+      ? createMockExecInterceptor(options.mockExec, { clock, onUnmatched: options.onUnmatchedExec })
+      : null
     const transport = new VirtualTransport(options.model)
     const handle = await transport.open('virtual:0')
     const controller = new DeckController({
@@ -77,14 +61,20 @@ export class HarnessSession {
       serial: transport.serial,
       clock,
       assetDir: options.assetDir,
+      execInterceptor,
     })
-    if (options.fonts?.length && options.assetDir) {
-      await controller.raster.loadAppFonts(options.fonts, options.assetDir)
+    try {
+      if (options.fonts?.length && options.assetDir) {
+        await controller.raster.loadAppFonts(options.fonts, options.assetDir)
+      }
+      await controller.start()
+      controller.render(options.element)
+      await controller.settled()
+    } catch (error) {
+      await controller.shutdown().catch(() => {})
+      throw error
     }
-    await controller.start()
-    controller.render(options.element)
-    await controller.settled()
-    return new HarnessSession(controller, transport, clock, Boolean(options.freezeTime), ownsInterceptor)
+    return new HarnessSession(controller, transport, clock, Boolean(options.freezeTime))
   }
 
   manifest(): Manifest {
@@ -153,7 +143,6 @@ export class HarnessSession {
   }
 
   async shutdown(): Promise<void> {
-    if (this.#ownsInterceptor) setExecInterceptor(null)
     await this.controller.shutdown()
   }
 
