@@ -10,8 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(import.meta.dir, '..', 'cli', 'index.ts')
-const EXAMPLE = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'app.tsx')
-const MOCKS = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'mocks.json')
+import { MIC_MUTE_APP as EXAMPLE, MIC_MUTE_MOCKS as MOCKS } from '../test/helpers.js'
 
 interface AgentEvent {
   event: string
@@ -91,6 +90,9 @@ function keyText(event: AgentEvent, position: number): string[] {
   return manifest.keys.find((k) => k.position === position)?.text ?? []
 }
 
+// NOTE: the tests below share ONE agent subprocess and run in order — each
+// builds on the state the previous one left (press → LIVE, then writeFrames
+// asserts LIVE). Do not `.only` one of them; the last test starts its own.
 describe('inkdeck agent protocol (§11.2)', () => {
   const client = new AgentClient([EXAMPLE, '--freeze-time', '--mock-exec', MOCKS])
   afterAll(async () => {

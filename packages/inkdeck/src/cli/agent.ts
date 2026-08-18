@@ -9,7 +9,7 @@
 
 import { HarnessSession } from '../harness/session.js'
 import { loadMockExecFile } from '../harness/mockExec.js'
-import { loadApp, resolveHeadlessModel } from './headless.js'
+import { loadApp, resolveHeadlessModel } from './loadApp.js'
 import type { Logger } from '../renderer/logger.js'
 import { createElement } from 'react'
 

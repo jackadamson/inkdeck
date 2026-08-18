@@ -3,13 +3,13 @@
 // the `testing` helper wraps it in-process, and the browser simulator is a
 // client of the same pipeline.
 
-import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
 import { createElement, type ComponentType, type ReactNode } from 'react'
 import type { Model } from '../device/models.js'
-import { VirtualTransport, type VirtualHandle } from '../transport/virtual.js'
-import { DeckController } from '../renderer/controller.js'
+import type { VirtualHandle } from '../transport/virtual.js'
+import type { DeckController } from '../renderer/controller.js'
 import { FrozenClock, SystemClock, type Clock } from '../renderer/clock.js'
+import { bootDeck } from '../session.js'
+import { writeFrames } from './frames.js'
 import { KEY_DEBOUNCE_MS } from '../renderer/input.js'
 import type { Logger } from '../renderer/logger.js'
 import { buildManifest, type Manifest } from './manifest.js'
@@ -39,16 +39,18 @@ export interface HarnessOptions {
 export class HarnessSession {
   readonly controller: DeckController
   readonly handle: VirtualHandle
-  readonly transport: VirtualTransport
   readonly clock: Clock
-  readonly frozen: boolean
+  readonly frozenClock: FrozenClock | null
 
-  private constructor(controller: DeckController, transport: VirtualTransport, clock: Clock, frozen: boolean) {
+  private constructor(controller: DeckController, handle: VirtualHandle, clock: Clock) {
     this.controller = controller
-    this.transport = transport
-    this.handle = transport.handle
+    this.handle = handle
     this.clock = clock
-    this.frozen = frozen
+    this.frozenClock = clock instanceof FrozenClock ? clock : null
+  }
+
+  get frozen(): boolean {
+    return this.frozenClock !== null
   }
 
   static async start(options: HarnessOptions): Promise<HarnessSession> {
@@ -56,29 +58,16 @@ export class HarnessSession {
     const execInterceptor = options.mockExec
       ? createMockExecInterceptor(options.mockExec, { clock, onUnmatched: options.onUnmatchedExec })
       : null
-    const transport = new VirtualTransport(options.model)
-    const handle = await transport.open('virtual:0')
-    const controller = new DeckController({
-      model: options.model,
-      handle,
-      serial: transport.serial,
+    const { controller, virtual } = await bootDeck({
+      element: options.element,
+      target: { kind: 'virtual', model: options.model },
       clock,
-      assetDir: options.assetDir,
       execInterceptor,
       logger: options.logger,
+      assetDir: options.assetDir,
+      fonts: options.fonts,
     })
-    try {
-      if (options.fonts?.length && options.assetDir) {
-        await controller.raster.loadAppFonts(options.fonts, options.assetDir)
-      }
-      await controller.start()
-      controller.render(options.element)
-      await controller.settled()
-    } catch (error) {
-      await controller.shutdown().catch(() => {})
-      throw error
-    }
-    return new HarnessSession(controller, transport, clock, Boolean(options.freezeTime))
+    return new HarnessSession(controller, virtual!, clock)
   }
 
   manifest(): Manifest {
@@ -99,7 +88,7 @@ export class HarnessSession {
   release(position: number): void {
     this.#assertPosition(position)
     this.handle.releaseKey(position)
-    if (this.frozen) (this.clock as FrozenClock).advance(RELEASE_SETTLE_MS)
+    this.frozenClock?.advance(RELEASE_SETTLE_MS)
   }
 
   /**
@@ -111,22 +100,22 @@ export class HarnessSession {
   async tap(position: number, holdMs = DEFAULT_TAP_HOLD_MS): Promise<void> {
     this.#assertPosition(position)
     this.handle.pressKey(position)
-    if (this.frozen) {
-      ;(this.clock as FrozenClock).advance(holdMs)
+    if (this.frozenClock) {
+      this.frozenClock.advance(holdMs)
     } else {
       await new Promise((resolve) => setTimeout(resolve, holdMs))
     }
     this.release(position)
-    if (!this.frozen) {
+    if (!this.frozenClock) {
       await new Promise((resolve) => setTimeout(resolve, RELEASE_SETTLE_MS))
     }
   }
 
   advanceTime(ms: number): void {
-    if (!this.frozen) {
+    if (!this.frozenClock) {
       throw new Error('[inkdeck] advanceTime requires --freeze-time (the clock is running on its own)')
     }
-    ;(this.clock as FrozenClock).advance(ms)
+    this.frozenClock.advance(ms)
   }
 
   async settled(): Promise<void> {
@@ -134,16 +123,8 @@ export class HarnessSession {
   }
 
   /** Write key-N.png + manifest.json for the current state (agent writeFrames, §11.2). */
-  async writeFrames(dir: string): Promise<Manifest> {
-    await mkdir(dir, { recursive: true })
-    const manifest = this.manifest()
-    for (const snapshot of this.controller.keySnapshots()) {
-      if (!snapshot.rgba) continue
-      const png = await this.controller.raster.rgbaToPng(snapshot.rgba, this.controller.model)
-      await Bun.write(join(dir, `key-${snapshot.position}.png`), png)
-    }
-    await Bun.write(join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-    return manifest
+  writeFrames(dir: string): Promise<Manifest> {
+    return writeFrames(this.controller, dir)
   }
 
   async shutdown(): Promise<void> {

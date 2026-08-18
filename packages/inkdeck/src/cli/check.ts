@@ -7,7 +7,9 @@
 import { dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { loadApp, resolveHeadlessModel, startHeadless } from './headless.js'
+import { createElement } from 'react'
+import { bootDeck } from '../session.js'
+import { loadApp, resolveHeadlessModel } from './loadApp.js'
 
 type Ts = typeof import('typescript')
 
@@ -90,7 +92,12 @@ export async function checkCommand(appPath: string): Promise<number> {
   try {
     const app = await loadApp(appPath)
     const model = resolveHeadlessModel(app)
-    const { controller } = await startHeadless(app, model)
+    const { controller } = await bootDeck({
+      element: createElement(app.App),
+      target: { kind: 'virtual', model },
+      assetDir: app.appDir,
+      fonts: app.config.fonts,
+    })
     const errored = controller.keySnapshots().filter((s) => s.error)
     await controller.shutdown()
     if (errored.length > 0) {

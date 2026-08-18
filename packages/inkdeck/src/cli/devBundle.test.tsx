@@ -11,7 +11,7 @@ import { DeckController } from '../renderer/controller.js'
 import { VirtualTransport } from '../transport/virtual.js'
 import { buildManifest } from '../harness/manifest.js'
 import { loadAppBundle } from './devBundle.js'
-import { loadApp } from './headless.js'
+import { loadApp } from './loadApp.js'
 import { watchApp } from './start.js'
 
 const INKDECK = join(import.meta.dir, '..', 'index.ts')

@@ -19,7 +19,7 @@ import { HarnessSession } from '../harness/session.js'
 import { normalizeMockExecConfig } from '../harness/mockExec.js'
 
 const CLI = join(import.meta.dir, '..', 'cli', 'index.ts')
-const EXAMPLE = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'app.tsx')
+import { MIC_MUTE_APP as EXAMPLE } from '../test/helpers.js'
 const GOLDEN_PATH = join(import.meta.dir, 'golden.json')
 
 const sha256 = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')

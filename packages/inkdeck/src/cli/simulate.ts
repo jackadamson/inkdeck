@@ -20,7 +20,7 @@ import type { Model } from '../device/models.js'
 import type { DeckController } from '../renderer/controller.js'
 import type { VirtualHandle } from '../transport/virtual.js'
 import { HarnessSession } from '../harness/session.js'
-import { loadApp, resolveHeadlessModel } from './headless.js'
+import { loadApp, resolveHeadlessModel } from './loadApp.js'
 import { createElement } from 'react'
 
 interface WsData {

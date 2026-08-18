@@ -3,23 +3,11 @@
 
 import { describe, expect, test } from 'bun:test'
 import { useState } from 'react'
-import { modelById } from '../device/models.js'
-import { VirtualTransport } from '../transport/virtual.js'
 import { buildManifest } from '../harness/manifest.js'
 import { Deck, Key } from './components.js'
-import { DeckController } from './controller.js'
+import { mountVirtual } from '../test/helpers.js'
 
-const mk2 = modelById('mk2')!
-
-async function mount(element: React.ReactNode) {
-  const transport = new VirtualTransport(mk2)
-  const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial })
-  await controller.start()
-  controller.render(element)
-  await controller.settled()
-  return controller
-}
+const mount = async (element: React.ReactNode) => (await mountVirtual(element)).controller
 
 let setOrder: (o: string[]) => void = () => {}
 

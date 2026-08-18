@@ -52,6 +52,13 @@ interface PendingImage {
   nextPart: number
 }
 
+/** Open a virtual deck in one call: the handle plus the serial it reports. */
+export async function openVirtualDeck(model: Model): Promise<{ handle: VirtualHandle; serial: string }> {
+  const transport = new VirtualTransport(model)
+  await transport.open('virtual:0')
+  return { handle: transport.handle, serial: transport.serial }
+}
+
 export class VirtualHandle implements TransportHandle {
   readonly model: Model
   /** Last complete image (JPEG bytes) written per key index. */

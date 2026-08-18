@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import sharp from 'sharp'
 
 const CLI = join(import.meta.dir, 'index.ts')
-const EXAMPLE = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'app.tsx')
+import { MIC_MUTE_APP as EXAMPLE } from '../test/helpers.js'
 
 async function runCli(args: string[], cwd?: string) {
   const proc = Bun.spawn([process.execPath, CLI, ...args], { cwd, stdout: 'pipe', stderr: 'pipe' })

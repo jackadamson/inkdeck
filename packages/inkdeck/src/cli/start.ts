@@ -4,10 +4,11 @@
 
 import { watch } from 'node:fs'
 import { dirname, sep } from 'node:path'
-import { createElement, type ComponentType } from 'react'
-import { hardwareTransport } from '../device/discovery.js'
+import { createElement } from 'react'
+import { hardwareTransport, selectDevice } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
-import { DeckController } from '../renderer/controller.js'
+import type { DeckController } from '../renderer/controller.js'
+import { bootDeck } from '../session.js'
 import {
   DeviceDisconnectedError,
   TransportIOError,
@@ -15,7 +16,7 @@ import {
   type Transport,
   type TransportHandle,
 } from '../transport/iface.js'
-import { loadApp } from './headless.js'
+import { loadApp } from './loadApp.js'
 import { DEV_BUNDLE_NAME, loadAppBundle, removeAppBundle } from './devBundle.js'
 
 export interface StartOptions {
@@ -43,18 +44,10 @@ async function waitForDevice(transport: Transport, wanted: string | undefined): 
   let announced = false
   for (;;) {
     const devices = await transport.list()
-    if (wanted) {
-      const match = devices.find((d) => d.serial === wanted)
-      if (match) return match
-    } else {
-      if (devices.length === 1) return devices[0]
-      if (devices.length > 1) {
-        const listing = devices.map((d) => `  ${d.serial} (${d.model})`).join('\n')
-        throw new Error(
-          `[inkdeck] multiple Stream Decks attached — pick one with --device <serial> or INKDECK_DEVICE:\n${listing}`,
-        )
-      }
-    }
+    const selection = selectDevice(devices, wanted)
+    if (selection.kind === 'selected') return selection.device
+    if (selection.kind === 'ambiguous') throw new Error(selection.message)
+    // 'absent': keep waiting.
     if (!announced) {
       announced = true
       console.error(`[inkdeck] waiting for ${wanted ? `Stream Deck ${wanted}` : 'a Stream Deck'}…`)
@@ -186,14 +179,22 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   const model = requireRenderableModel(info.model)
   console.error(`[inkdeck] using ${model.id} ${info.serial} (${model.columns}×${model.rows})`)
 
-  controller = new DeckController({
-    model,
-    handle,
-    serial: info.serial,
-    assetDir: app.appDir,
-    debug: options.debug,
-  })
-  const deck = controller
+  let deck: DeckController
+  try {
+    ;({ controller: deck } = await bootDeck({
+      element: createElement(app.App),
+      target: { kind: 'hardware', handle, model, serial: info.serial },
+      assetDir: app.appDir,
+      fonts: app.config.fonts,
+      debug: options.debug,
+    }))
+  } catch (error) {
+    console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    await handle.close().catch(() => {})
+    await shutdown(1)
+    return 1
+  }
+  controller = deck
 
   // Unplug ⇒ one line, keep the React tree alive, wait for the same deck to
   // come back, reattach, repaint everything. Autostart survives replugs, and
@@ -223,19 +224,6 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
       }
     })()
   })
-
-  try {
-    if (app.config.fonts?.length) {
-      await deck.raster.loadAppFonts(app.config.fonts, app.appDir)
-    }
-    await deck.start()
-    deck.render(createElement(app.App))
-    await deck.settled()
-  } catch (error) {
-    console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-    await shutdown(1)
-    return 1
-  }
 
   if (options.watch) {
     stopWatch = watchApp(app.appPath, appPath, deck)

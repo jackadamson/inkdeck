@@ -4,26 +4,16 @@
 
 import { describe, expect, test } from 'bun:test'
 import { useState } from 'react'
-import { modelById } from '../device/models.js'
-import { VirtualTransport } from '../transport/virtual.js'
+import { openVirtualDeck } from '../transport/virtual.js'
 import { Deck, Key } from './components.js'
 import { DeckController } from './controller.js'
 import { buildManifest } from '../harness/manifest.js'
 import type { Clock } from './clock.js'
 import { FrozenClock } from './clock.js'
 import type { Logger } from './logger.js'
+import { mk2, mountVirtual } from '../test/helpers.js'
 
-const mk2 = modelById('mk2')!
-
-async function mount(element: React.ReactNode, clock?: Clock, logger?: Logger) {
-  const transport = new VirtualTransport(mk2)
-  const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, clock, logger })
-  await controller.start()
-  controller.render(element)
-  await controller.settled()
-  return { controller, handle: transport.handle }
-}
+const mount = (element: React.ReactNode, clock?: Clock, logger?: Logger) => mountVirtual(element, { clock, logger })
 
 describe('headless renderer', () => {
   test('renders keys, pushes JPEGs, and builds a §11.1 manifest', async () => {
@@ -74,8 +64,7 @@ describe('headless renderer', () => {
   })
 
   test('duplicate position throws at commit with both component stacks', async () => {
-    const transport = new VirtualTransport(mk2)
-    const handle = await transport.open('virtual:0')
+    const { handle } = await openVirtualDeck(mk2)
     const controller = new DeckController({ model: mk2, handle })
     await controller.start()
     controller.render(
@@ -350,8 +339,7 @@ describe('headless renderer', () => {
         </Key>
       </Deck>
     )
-    const transport = new VirtualTransport(mk2)
-    const handle = await transport.open('virtual:0')
+    const { handle } = await openVirtualDeck(mk2)
     const controller = new DeckController({ model: mk2, handle })
     await controller.start()
     controller.render(bad)
@@ -375,8 +363,7 @@ describe('headless renderer', () => {
         </Deck>
       )
     }
-    const transport = new VirtualTransport(mk2)
-    const handle = await transport.open('virtual:0')
+    const { handle } = await openVirtualDeck(mk2)
     const controller = new DeckController({ model: mk2, handle })
     await controller.start()
     let rounds = 0

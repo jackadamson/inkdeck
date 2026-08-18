@@ -3,14 +3,11 @@
 
 import { describe, expect, test } from 'bun:test'
 import { useState } from 'react'
-import { modelById } from '../device/models.js'
-import { VirtualTransport } from '../transport/virtual.js'
+import { openVirtualDeck } from '../transport/virtual.js'
 import { DeviceDisconnectedError } from '../transport/iface.js'
 import type { Logger } from './logger.js'
 import { Deck, Key } from './components.js'
-import { DeckController } from './controller.js'
-
-const mk2 = modelById('mk2')!
+import { mk2, mountVirtual } from '../test/helpers.js'
 
 function TwoKeys() {
   const [count, setCount] = useState(0)
@@ -26,15 +23,7 @@ function TwoKeys() {
   )
 }
 
-async function mountTwoKeys(logger?: Logger) {
-  const transport = new VirtualTransport(mk2)
-  const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, logger })
-  await controller.start()
-  controller.render(<TwoKeys />)
-  await controller.settled()
-  return { controller, handle: transport.handle }
-}
+const mountTwoKeys = (logger?: Logger) => mountVirtual(<TwoKeys />, { logger })
 
 describe('device unplug/replug', () => {
   test('disconnect fires onDeviceLost once and silences pushes — no error flood', async () => {
@@ -60,8 +49,7 @@ describe('device unplug/replug', () => {
     handle.simulateDisconnect()
     expect(controller.detached).toBe(true)
 
-    const replug = new VirtualTransport(mk2)
-    await replug.open('virtual:0')
+    const replug = await openVirtualDeck(mk2)
     const newHandle = replug.handle
     await controller.replaceHandle(newHandle)
     await controller.settled()
@@ -87,16 +75,14 @@ describe('device unplug/replug', () => {
     const { controller, handle } = await mountTwoKeys()
     handle.simulateDisconnect()
 
-    const replug = new VirtualTransport(mk2)
-    await replug.open('virtual:0')
+    const replug = await openVirtualDeck(mk2)
     const flaky = replug.handle
     flaky.simulateDisconnect() // gone again before reset/brightness land
     await expect(controller.replaceHandle(flaky)).rejects.toBeInstanceOf(DeviceDisconnectedError)
     expect(controller.detached).toBe(true)
 
     // A second, healthy replug still works.
-    const again = new VirtualTransport(mk2)
-    await again.open('virtual:0')
+    const again = await openVirtualDeck(mk2)
     await controller.replaceHandle(again.handle)
     await controller.settled()
     expect(controller.detached).toBe(false)
@@ -107,8 +93,7 @@ describe('device unplug/replug', () => {
   test('input from the stale handle is ignored after replaceHandle', async () => {
     const { controller, handle } = await mountTwoKeys()
     handle.simulateDisconnect()
-    const replug = new VirtualTransport(mk2)
-    await replug.open('virtual:0')
+    const replug = await openVirtualDeck(mk2)
     await controller.replaceHandle(replug.handle)
     await controller.settled()
 
