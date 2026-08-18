@@ -81,12 +81,9 @@ describe('inkdeck CLI', () => {
       // Empty message (macOS, nothing attached) or the no-transport fallback (Linux).
       expect(out).toMatch(/no stream deck|no devices/)
     } else {
-      expect(
-        result.stdout
-          .trim()
-          .split('\n')
-          .every((l) => /^\S+\t\S+/.test(l)),
-      ).toBe(true)
+      const [header, ...rows] = result.stdout.trim().split('\n')
+      expect(header).toBe('SERIAL\tMODEL\tPRODUCT')
+      expect(rows.every((l) => /^\S+\t\S+/.test(l))).toBe(true)
     }
   })
 

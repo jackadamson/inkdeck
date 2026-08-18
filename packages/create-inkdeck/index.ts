@@ -29,7 +29,7 @@ export async function createProject(targetDir: string): Promise<void> {
   console.error(`  cd ${targetDir}`)
   console.error('  bun install')
   console.error('  bun run check          # typecheck + headless render')
-  console.error('  bun test               # harness test with mocked osascript')
+  console.error('  bun test               # harness test, frozen time, no hardware')
   console.error('  bun run dev            # hardware (or: bun run dev --simulate)')
   console.error('')
   console.error('Working with a coding agent? CLAUDE.md has the full agent workflow.')

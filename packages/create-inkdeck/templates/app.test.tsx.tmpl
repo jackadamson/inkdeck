@@ -1,48 +1,29 @@
-// Harness-based test for the reference app (SPEC §11.4, §14): frozen time,
-// mocked osascript — no hardware, no real subprocesses, deterministic.
+// Harness-based test (no hardware): frozen time, deterministic taps.
 
 import { describe, expect, test } from 'bun:test'
 import { renderDeck } from '@jackadamson/inkdeck/testing'
 import App from './app.tsx'
 import mocks from './mocks.json'
 
-describe('mic-mute app (agent harness)', () => {
-  test('polls, toggles optimistically, and reconciles', async () => {
+describe('counter app', () => {
+  test('increments, decrements, and resets on long-press', async () => {
     const deck = await renderDeck(<App />, { model: 'mk2', freezeTime: true, mockExec: mocks })
+    expect(deck.key(0).text).toEqual(['count', '0'])
+    expect(deck.key(1).hasPress).toBe(true)
 
-    // The poller fires on mount; the mock reports input volume 75 ⇒ LIVE.
-    expect(deck.key(0).text).toEqual(['mic', 'LIVE'])
-    expect(deck.key(0).hasPress).toBe(true)
-    expect(deck.key(0).error).toBeNull()
-
-    // Press ⇒ optimistic MUTED, and the mocked `set volume` command ran.
-    await deck.tap(0)
+    await deck.tap(1)
+    await deck.tap(1)
+    await deck.tap(2)
     await deck.settled()
-    expect(deck.key(0).text).toEqual(['mic', 'MUTED'])
+    expect(deck.key(0).text).toEqual(['count', '1'])
 
-    // Next poll still reads volume 75 from the mock ⇒ reconciles back to LIVE
-    // (exactly the drift-correction behavior the optimistic update relies on).
-    deck.advanceTime(1000)
+    // Long-press key 0: hold past longPressMs (frozen clock advances through the tap).
+    await deck.tap(0, 700)
     await deck.settled()
-    expect(deck.key(0).text).toEqual(['mic', 'LIVE'])
+    expect(deck.key(0).text).toEqual(['count', '0'])
 
-    // Every command the app ran was covered by a mock.
+    // This app runs no subprocesses; if you add exec() calls, mock them in mocks.json.
     expect(deck.unmatchedExecs).toEqual([])
-
-    await deck.shutdown()
-  })
-
-  test('an unmocked command surfaces as a gap, not a hang', async () => {
-    const deck = await renderDeck(<App />, {
-      model: 'mk2',
-      freezeTime: true,
-      mockExec: { mocks: [] },
-    })
-    // The mount poll ran with no matching mock: recorded, exec got exit 127,
-    // and the tile stays in its unknown state.
-    expect(deck.unmatchedExecs.length).toBeGreaterThan(0)
-    expect(deck.unmatchedExecs[0]).toContain('osascript')
-    expect(deck.key(0).text).toEqual(['mic', '?'])
     await deck.shutdown()
   })
 })

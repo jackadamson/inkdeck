@@ -1,7 +1,7 @@
 {
   "name": "@jackadamson/inkdeck",
-  "version": "0.1.1",
-  "description": "React renderer for Elgato Stream Deck — Ink, but the terminal is a grid of LCD keys",
+  "version": "0.1.2",
+  "description": "React renderer for Elgato Stream Deck \u2014 Ink, but the terminal is a grid of LCD keys",
   "keywords": [
     "stream-deck",
     "streamdeck",
@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@takumi-rs/core": "^2.5.4",
+    "@types/react-reconciler": "0.33.0",
     "react-reconciler": "0.33.0"
   },
   "peerDependencies": {
@@ -57,7 +58,6 @@
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "@types/react": "^19.1.0",
-    "@types/react-reconciler": "0.33.0",
     "react": "^19.2.0",
     "typescript": "^5.8.0"
   }

@@ -16,7 +16,12 @@ below is CLI/stdio and returns structure, not pixels.
    `inkdeck agent app.tsx --freeze-time --mock-exec mocks.json` and speak the
    JSON-lines protocol below.
 5. `bun test` — the harness test in `app.test.tsx` (uses
-   `@jackadamson/inkdeck/testing`, mocked subprocesses, frozen time).
+   `@jackadamson/inkdeck/testing`, frozen time, mocked subprocesses).
+
+The starter app is a dependency-free counter (key 0 count / long-press reset,
+key 1 +, key 2 −). For polling external state with `exec()` and mocking it,
+copy the pattern from the mic-mute example in the inkdeck repo
+(`examples/mic-mute`).
 
 ## Manifest shape (structural snapshot)
 
@@ -80,7 +85,11 @@ cleanly.
 - `--mock-exec mocks.json`: every `exec()` resolves from the mock table
   (`match` is exact or, with `"regex": true`, a pattern over the space-joined
   argv). Unmatched commands resolve exit 127 **and** emit an `error` event
-  naming the command — if you see one, add the missing mock.
+  naming the command — if you see one, add the missing mock. The file shape
+  is `{ "mocks": [ { "match": "…", "regex"?: true, "stdout"?: "…",
+  "stderr"?: "…", "exitCode"?: 0, "delayMs"?: 0 } ] }` (a bare array is
+  also accepted). An app with no `exec()` calls keeps `{ "mocks": [] }` —
+  a plain `{}` is rejected.
 
 ## Rules
 
