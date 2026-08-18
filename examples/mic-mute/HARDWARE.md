@@ -1,4 +1,8 @@
-# Hardware checklist (M2 acceptance, SPEC §13)
+# Hardware checklist (M2 acceptance record + re-verifications)
+
+A dated record of what was verified on a physical deck; the ✅ items were true
+on the date given and are re-checked when the relevant layer changes (latest:
+2026-08-18, see the bottom).
 
 Manual verification of the full stack on a physical Stream Deck. Run everything
 from the repo root with the pinned Bun. Quit the Elgato Stream Deck app first —
@@ -49,8 +53,9 @@ bun packages/inkdeck/src/cli/index.ts start examples/mic-mute/app.tsx
 bun packages/inkdeck/src/cli/index.ts dev examples/mic-mute/app.tsx
 ```
 
-- ✅ edit + save `app.tsx` → `[inkdeck] reloaded …` and the deck repaints
-      (transport handle stays alive across reloads)
+- ✅ edit + save `app.tsx` (or any module it imports — the whole app graph is
+      re-bundled per save) → `[inkdeck] reloaded … — repainted keys […]` and the
+      deck repaints (transport handle stays alive across reloads)
 - ✅ save a file with a syntax error → `[inkdeck] reload failed: …`, session
       keeps running and keeps watching; fixing the file recovers
 - ✅ Ctrl-C exits 0 and resets the deck
@@ -89,3 +94,15 @@ With `start` (or `dev`) running:
 - Real key switches bounce; the controller now drops a key-down arriving
   within 30 ms of the same key's release (user-reported occasional double
   toggle → debounced; releases are never dropped).
+
+## Re-verification 2026-08-18 (Stream Deck XL, Bun 1.3.11)
+
+After the review-driven changes (`docs/review-2026-08-18.md`):
+
+- ✅ Takumi-encoded JPEGs (sharp removed) accepted by the deck; aurora and the
+      mic-mute tile look right — orientation, colours, crisp text (human-verified)
+- ✅ `hardware-smoke.ts` all PASS with the new encoder
+- ✅ concurrent per-round raster + identity-based removal detection: 12 s
+      `start --debug` runs with no spurious `device disconnected`
+- ✅ unplug/replug during `start`: one `device disconnected`, `waiting for
+      Stream Deck <serial>…`, `reconnected … — repainting` (human-verified)
