@@ -12,9 +12,10 @@ The spec predates Takumi's 1.x/2.x line. We use `@takumi-rs/core` +
   field (`className` on Takumi nodes is only used with CSS `stylesheets`).
   inkdeck maps the JSX `className` prop → Takumi `tw`, so app code matches the
   spec's `className` API exactly.
-- `render(node, { format: 'raw' })` returns raw RGBA — that buffer feeds sharp
-  for both the device JPEG (with model transform) and the render/simulator PNG
-  (untransformed), keeping all surfaces pixel-identical (§6.1).
+- `render(node, { format: 'raw' })` returns raw RGBA — that buffer is re-encoded
+  (also by Takumi, see below) for both the device JPEG (with model transform)
+  and the render/simulator PNG (untransformed), keeping all surfaces
+  pixel-identical (§6.1).
 - Fonts are registered per-renderer with `registerFont({ data, name })`;
   nothing system-wide leaks in, which is what makes rendering deterministic.
 
@@ -175,18 +176,35 @@ Calling ServerWebSocket.close() (graceful handshake) and then awaiting
 handshake is in flight. The simulator's stop() lets `stop(true)` force-close
 open sockets itself.
 
-## Hot-reload watches the parent directory, not the file
+## Hot reload re-bundles the app graph (SPEC §18.2)
 
-Editors (and `sed -i`) save via write-to-temp + rename, which replaces the
-inode and silently kills a file-scoped `fs.watch` after the first save —
-observed live: the second edit stopped triggering reloads. `watchApp` watches
-`dirname(app)` and filters events to the app's basename.
+Bun's ESM registry has no invalidation API and a cache-busted
+`import(app?gen)` re-evaluates only the entry file — modules it imports stay
+stale, so any app split across files silently ran old code after a save.
+`dev` now bundles the app's whole module graph per reload with `Bun.build`
+(`react*` and `@jackadamson/inkdeck` external, plus any path import that
+resolves into this package, so the app shares the renderer's React and
+DeckContext) into `<appDir>/.inkdeck-dev.js` and imports that with a fresh
+query string. The bundle lives next to the app — not in a temp dir — so bare
+specifiers resolve from the app's node_modules and `import.meta.dir` is still
+the app directory; it is gitignored by the scaffold and removed on exit.
+`bun --hot` was the alternative (park the handle on globalThis and let Bun
+re-run importers), rejected because it re-executes the CLI entry and would
+have to survive re-evaluation of the IOKit transport too.
+
+The watcher is recursive over the app directory (skipping `node_modules`,
+`.git` and the bundle) — editors (and `sed -i`) save via write-to-temp +
+rename, which replaces the inode and kills a file-scoped `fs.watch` after
+the first save. Bun 1.3.11 note: calling `Bun.resolveSync` inside a
+`Bun.build` `onResolve` hook under `bun test` makes later builds of rewritten
+inputs fail with "Unseekable reading file"; the external-path plugin uses
+pure path math instead.
 
 ## Cross-machine determinism gate is a committed golden
 
 `raster/golden.json` holds SHA-256 hashes (RGBA, JPEG, PNG) of the reference
 app's key 0 in its deterministic frozen-time state, recorded on macOS arm64
-with the pinned Bun/takumi/sharp. `determinism.test.ts` compares against it
+with the pinned Bun/takumi. `determinism.test.ts` compares against it
 on every run; a second machine running the suite IS the cross-machine test.
 A mismatch means a nondeterminism leak or a prebuild difference — investigate
 before regenerating (`INKDECK_UPDATE_GOLDEN=1`).
@@ -233,3 +251,26 @@ every key repainted from its cached scene. Ambiguity still fails fast:
 multiple decks with no --device is an error, and non-device failures exit
 non-zero as before. Verified live on the XL: unplug → one line; replug →
 tile back with state intact.
+
+## sharp removed: Takumi encodes JPEG/PNG and applies the device flip
+
+`@takumi-rs/core` alone covers what sharp did here. Raw RGBA is fed back as an
+`RgbaImage` node (`{ type: 'image', src: { width, height, data } }`); identity
+re-encode is lossless, `transform: 'scale(-1, -1)'` matches libvips'
+`.flip().flop()` byte-for-byte at 72² and 96², `format: 'jpeg', quality: 95`
+produces baseline 4:4:4 JPEG, and `format: 'png'` round-trips losslessly. The
+encode is ~5× faster than sharp per key and drops ~17 MB of libvips per
+platform plus a second native supply-chain surface (SPEC §2). Verified on the
+XL (aurora + mic-mute text: crisp, correct orientation and colours) on
+2026-08-18 before deletion. The goldens' JPEG/PNG hashes changed with the
+encoder (intentional; the RGBA golden is unchanged, which is the raster
+determinism claim).
+
+## Kept `exec` as the subprocess API name; no `tagName` to Takumi yet
+
+The review suggested renaming `exec` (it takes an argv array, unlike
+`child_process.exec`) and passing `tagName` so Takumi applies `p`/`span`
+semantics. `exec` stays: the array signature is unmistakable at the call
+site and every doc/example/test/scaffold uses it. `tagName` is deferred: it
+would change rendered pixels (default presets/margins) inside 72–96 px keys,
+which is exactly what apps do not want; revisit with the stylesheet feature.

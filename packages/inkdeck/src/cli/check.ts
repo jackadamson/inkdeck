@@ -7,7 +7,9 @@
 import { dirname, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { loadApp, resolveHeadlessModel, startHeadless } from './headless.js'
+import { createElement } from 'react'
+import { bootDeck } from '../session.js'
+import { loadApp, resolveHeadlessModel } from './loadApp.js'
 
 type Ts = typeof import('typescript')
 
@@ -44,7 +46,7 @@ export async function checkCommand(appPath: string): Promise<number> {
   const ts = await loadTypescript(appDir)
   if (!ts) {
     console.error(
-      '[inkdeck] check: could not resolve the `typescript` package. Add it to your app\'s devDependencies (`bun add -d typescript`) to enable typechecking.',
+      "[inkdeck] check: could not resolve the `typescript` package. Add it to your app's devDependencies (`bun add -d typescript`) to enable typechecking.",
     )
     return 1
   }
@@ -61,12 +63,18 @@ export async function checkCommand(appPath: string): Promise<number> {
     types: ['bun'],
   }
   if (configPath) {
-    const parsed = ts.getParsedCommandLineOfConfigFile(configPath, { noEmit: true }, {
-      ...ts.sys,
-      onUnRecoverableConfigFileDiagnostic: (d) => {
-        console.error(`[inkdeck] check: failed to parse ${configPath}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`)
+    const parsed = ts.getParsedCommandLineOfConfigFile(
+      configPath,
+      { noEmit: true },
+      {
+        ...ts.sys,
+        onUnRecoverableConfigFileDiagnostic: (d) => {
+          console.error(
+            `[inkdeck] check: failed to parse ${configPath}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`,
+          )
+        },
       },
-    })
+    )
     if (parsed) compilerOptions = { ...parsed.options, noEmit: true }
   }
   const program = ts.createProgram([appPath], compilerOptions)
@@ -90,7 +98,12 @@ export async function checkCommand(appPath: string): Promise<number> {
   try {
     const app = await loadApp(appPath)
     const model = resolveHeadlessModel(app)
-    const { controller } = await startHeadless(app, model)
+    const { controller } = await bootDeck({
+      element: createElement(app.App),
+      target: { kind: 'virtual', model },
+      assetDir: app.appDir,
+      fonts: app.config.fonts,
+    })
     const errored = controller.keySnapshots().filter((s) => s.error)
     await controller.shutdown()
     if (errored.length > 0) {
@@ -100,7 +113,9 @@ export async function checkCommand(appPath: string): Promise<number> {
       return 1
     }
   } catch (error) {
-    console.error(`[inkdeck] check: headless render failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    console.error(
+      `[inkdeck] check: headless render failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`,
+    )
     return 1
   }
 

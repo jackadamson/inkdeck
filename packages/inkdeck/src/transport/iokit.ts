@@ -7,9 +7,15 @@
 // Property values (ProductID CFNumbers, short serial CFStrings) are exactly
 // the refs that come back tagged.
 
-import { dlopen, FFIType, JSCallback, ptr, toArrayBuffer, type Pointer } from 'bun:ffi'
+import { dlopen, FFIType, JSCallback, toArrayBuffer, type Pointer } from 'bun:ffi'
 import { modelByProductId, VENDOR_ID } from '../device/models.js'
-import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
+import {
+  DeviceDisconnectedError,
+  TransportIOError,
+  type DeviceInfo,
+  type Transport,
+  type TransportHandle,
+} from './iface.js'
 import {
   bufPtr,
   CF_NULL,
@@ -18,6 +24,7 @@ import {
   cfNumber,
   cfNumberToJs,
   cfRelease,
+  cfRetain,
   cfRunLoopGetCurrent,
   cfRunLoopRunInMode,
   cfSetToArray,
@@ -80,7 +87,9 @@ function openIOKit() {
 
 function iokit() {
   if (process.platform !== 'darwin') {
-    throw new Error('[inkdeck] IOKitTransport is only available on macOS (hardware support for other platforms is post-MVP)')
+    throw new Error(
+      '[inkdeck] IOKitTransport is only available on macOS (hardware support for other platforms is post-MVP)',
+    )
   }
   if (!ioLib) ioLib = openIOKit()
   return ioLib.symbols
@@ -106,9 +115,7 @@ function isElgatoAppRunning(): boolean {
 function openFailureMessage(serial: string): string {
   const lines = [`[inkdeck] failed to open Stream Deck ${serial}.`]
   if (isElgatoAppRunning()) {
-    lines.push(
-      'The Elgato Stream Deck app is running and holds exclusive access to the device — quit it and retry.',
-    )
+    lines.push('The Elgato Stream Deck app is running and holds exclusive access to the device — quit it and retry.')
   } else {
     lines.push(
       'The usual cause is missing Input Monitoring permission: System Settings → Privacy & Security → Input Monitoring, enable it for your terminal, then retry.',
@@ -122,6 +129,11 @@ function openFailureMessage(serial: string): string {
 // observed to never fire (macOS 15.6/arm64, Bun 1.3.11) — the manager's set,
 // drained via the run loop, is the reliable removal signal.
 const REMOVAL_POLL_MS = 1000
+// A failed report may be an unplug that removal polling has not flagged yet:
+// a failing write waits this long (> one poll) for the verdict before it is
+// reported as a plain I/O error, so callers never see a per-key error flood
+// for what is really a disconnect.
+const DISCONNECT_GRACE_MS = REMOVAL_POLL_MS + 200
 
 export class IOKitTransport implements Transport {
   #manager: CFRef = CF_NULL
@@ -203,7 +215,9 @@ export class IOKitTransport implements Transport {
     if (!this.#devicesBySerial.has(serial)) await this.list()
     const device = this.#devicesBySerial.get(serial)
     if (!device) {
-      throw new Error(`[inkdeck] no Stream Deck with serial "${serial}" attached — run \`inkdeck list\` to see candidates`)
+      throw new Error(
+        `[inkdeck] no Stream Deck with serial "${serial}" attached — run \`inkdeck list\` to see candidates`,
+      )
     }
     const io = iokit()
     const rc = io.IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone)
@@ -236,9 +250,12 @@ export class IOKitTransport implements Transport {
       this.#removalPoll = null
       return
     }
-    const present = new Set((await this.list()).map((d) => d.serial))
+    await this.list()
     for (const [serial, handle] of this.#openHandles) {
-      if (!present.has(serial)) {
+      // Liveness is identity, not serial: an unplug/replug (or hub blip) that
+      // completes between two polls yields a *new* IOHIDDeviceRef for the
+      // same serial, and the old handle is just as dead as if it were absent.
+      if (this.#devicesBySerial.get(serial) !== handle.device) {
         this.#openHandles.delete(serial)
         handle.markRemoved()
       }
@@ -259,7 +276,9 @@ class IOKitHandle implements TransportHandle {
   #dead = false
 
   constructor(device: CFRef) {
-    this.#device = device
+    // Retain: the manager drops its reference on removal, and this handle
+    // may still be asked to write/close before the poll flags the removal.
+    this.#device = cfRetain(device)
     // The default run loop mode's contents are the literal string below;
     // CFString comparison is by value, so a fresh CFString works for both
     // scheduling and pumping (avoids binding the kCFRunLoopDefaultMode data symbol).
@@ -275,7 +294,15 @@ class IOKitHandle implements TransportHandle {
     // The report buffer is a real heap pointer (never tagged), so FFIType.ptr
     // is safe here and is what toArrayBuffer wants.
     this.#callback = new JSCallback(
-      (_ctx: Pointer, _result: number, _sender: Pointer, _type: number, _reportId: number, report: Pointer, length: number | bigint) => {
+      (
+        _ctx: Pointer,
+        _result: number,
+        _sender: Pointer,
+        _type: number,
+        _reportId: number,
+        report: Pointer,
+        length: number | bigint,
+      ) => {
         const len = Number(length)
         if (len <= 0) return
         // For numbered-report devices the IOKit callback buffer already begins
@@ -335,6 +362,11 @@ class IOKitHandle implements TransportHandle {
     return this.#closed
   }
 
+  /** The IOHIDDeviceRef this handle drives (identity check for removal detection). */
+  get device(): CFRef {
+    return this.#device
+  }
+
   async writeOutput(report: Uint8Array): Promise<void> {
     this.#assertOpen()
     const io = iokit()
@@ -347,8 +379,19 @@ class IOKitHandle implements TransportHandle {
       BigInt(report.length),
     )
     if (rc !== kIOReturnSuccess) {
-      throw new Error(`[inkdeck] IOHIDDeviceSetReport(output) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+      await this.#ioFailure(`IOHIDDeviceSetReport(output) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
     }
+  }
+
+  /** Classify a failed report: disconnect (after giving removal detection one
+   *  poll cycle) or a genuine I/O error. Always throws. */
+  async #ioFailure(detail: string): Promise<never> {
+    const deadline = Date.now() + DISCONNECT_GRACE_MS
+    while (!this.#dead && !this.#closed && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    this.#assertOpen()
+    throw new TransportIOError(`[inkdeck] ${detail}`)
   }
 
   async sendFeature(report: Uint8Array): Promise<void> {
@@ -370,7 +413,7 @@ class IOKitHandle implements TransportHandle {
       await new Promise((resolve) => setTimeout(resolve, 20))
       this.#assertOpen() // don't retry against a device that vanished mid-wait
     }
-    throw new Error(`[inkdeck] IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+    return this.#ioFailure(`IOHIDDeviceSetReport(feature) failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
   }
 
   async getFeature(reportId: number, length: number): Promise<Uint8Array> {
@@ -387,7 +430,7 @@ class IOKitHandle implements TransportHandle {
       bufPtr(lengthStorage),
     )
     if (rc !== kIOReturnSuccess) {
-      throw new Error(`[inkdeck] IOHIDDeviceGetReport failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
+      await this.#ioFailure(`IOHIDDeviceGetReport failed (IOReturn 0x${(rc >>> 0).toString(16)})`)
     }
     return buffer.subarray(0, Number(lengthStorage[0]))
   }
@@ -408,6 +451,7 @@ class IOKitHandle implements TransportHandle {
     this.#callback?.close()
     this.#removalCallback?.close()
     cfRelease(this.#runLoopMode)
+    cfRelease(this.#device)
   }
 
   #assertOpen(): void {

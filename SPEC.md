@@ -2,7 +2,9 @@
 
 **inkdeck** (`@jackadamson/inkdeck`) is a custom React renderer whose render target is an Elgato Stream Deck. Think **Ink, but the "terminal" is a grid of physical LCD keys**. Developers who know React should be able to build personal workflow tools (mute toggles, Docker dashboards, deploy buttons) in a single `app.tsx`, with hot reload, a browser simulator, and a first-class feedback loop for coding agents.
 
-This document is the source of truth for scope, constraints, and behavior. Sections marked **[P1]** are post-MVP; everything else is v1.
+This document is the original design specification (scope, constraints, intended behavior). Sections marked **[P1]** are post-MVP; everything else is v1.
+
+> **Status (2026-08-18):** the implementation has deliberately drifted in places (e.g. `--simulate --model`, six-op transport handle, `check`'s compiler resolution, press semantics with `onLongPress`, `config.defaultModel`, Takumi-only encoding). `DECISIONS.md` records each delta and why; `README.md` and `skills/inkdeck/SKILL.md` describe what actually ships. Read this file as the design rationale, not as the API reference.
 
 ---
 
@@ -26,12 +28,12 @@ This document is the source of truth for scope, constraints, and behavior. Secti
 |---|---|---|
 | `react` | the point | approved |
 | `react-reconciler` | custom renderer host config | approved (it is in Ink's dependency tree, and Ink is approved) |
-| `@takumi-rs/core` + `@takumi-rs/helpers` | raster core: scene tree → pixels; CSS flexbox, Tailwind `className` resolution, explicit font loading | approved |
-| `sharp` | JPEG encode (4:4:4) of Takumi's raw RGBA + model flip/rotate + image utilities | approved |
+| `@takumi-rs/core` | raster core: scene tree → pixels; CSS flexbox, Tailwind `className` resolution, explicit font loading; also the JPEG (4:4:4) / PNG encoder and model flip via an RgbaImage node | approved |
+| ~~`sharp`~~ | removed 2026-08-18: Takumi encodes JPEG/PNG and applies the flip pixel-exactly (DECISIONS) — one native dependency instead of two | retired |
 
 **Explicitly disallowed:** `node-hid` (not approved — we replace it with `bun:ffi`, §4), `canvas`/`node-canvas`, `jpeg-js`, `pureimage`, any CLI/arg-parsing/chalk-style helper. If you feel you need a utility package, inline the ~50 lines instead. Arg parsing uses `util.parseArgs` (built into Bun's Node compat). Anything from the `bun:` namespace and Bun globals (`Bun.spawn`, `bun test`, `Bun.serve`) is fine.
 
-**Native modules on Bun:** use sharp ≥ 0.33 and current `@takumi-rs/core`; both ship N-API prebuilds as ordinary npm platform packages. Milestone 0's first task is a CI smoke test on the pinned Bun version: Takumi renders a styled `div` with the bundled font → raw RGBA → sharp → JPEG → decode confirms dimensions. If either breaks, stop and flag — do not work around it with a new package. Prebuilds arrive via `npm install` only; running code never fetches `.node` binaries or fonts over the network (§16). Tailwind-style `className` support is Takumi's built-in resolver — do **not** add a `tailwindcss` dependency.
+**Native modules on Bun:** use current `@takumi-rs/core`; it ships N-API prebuilds as ordinary npm platform packages. Milestone 0's first task is a CI smoke test on the pinned Bun version: Takumi renders a styled `div` with the bundled font → raw RGBA → JPEG → header confirms dimensions and 4:4:4. If either breaks, stop and flag — do not work around it with a new package. Prebuilds arrive via `npm install` only; running code never fetches `.node` binaries or fonts over the network (§16). Tailwind-style `className` support is Takumi's built-in resolver — do **not** add a `tailwindcss` dependency.
 
 ## 3. Architecture overview
 
@@ -158,7 +160,7 @@ v1 targets **gen-2 JPEG devices**: MK.2, XL, V2, Mini (gen-2), Neo. Plus (dials/
 - **Reset:** feature report `[0x03, 0x02, 0…]`. Send on startup and on clean shutdown.
 - **Input report:** `[reportId, …, keyStates]` — one byte per key (0/1) at a small model-specific offset. Emit `keydown`/`keyup` per position on change.
 
-Apply the model's flip/rotate transform at raster time (sharp `.flip()/.flop()/.rotate()`), not by mangling JPEG bytes.
+Apply the model's flip/rotate transform at raster time (CSS `transform` on the RGBA image node when re-encoding), not by mangling JPEG bytes.
 
 ## 6. Rasterization pipeline
 
@@ -167,7 +169,7 @@ Apply the model's flip/rotate transform at raster time (sharp `.flip()/.flop()/.
 Each `<Key>`'s children form a small scene tree of standard elements (§7.1). The raster layer converts it to Takumi nodes (via `@takumi-rs/helpers`) and renders at the model's native key resolution:
 
 - Layout and styling are Takumi's CSS subset: flexbox (`div` defaults to `display: flex`), Tailwind utility classes via `className`, inline `style` reserved for dynamic values (data-driven colors, computed sizes).
-- Takumi renders to **raw RGBA**; sharp then applies the model transform (`.flip()/.flop()/.rotate()`) and encodes `.jpeg({ quality: 95, chromaSubsampling: '4:4:4' })` for the HID push. The `render` command and simulator want PNGs — encode those from the **same RGBA buffer** so all three surfaces are pixel-identical.
+- Takumi renders to **raw RGBA**; that buffer is fed back to Takumi as an `RgbaImage` node with the model transform as CSS and encoded `{ format: 'jpeg', quality: 95 }` (4:4:4) for the HID push. The `render` command and simulator want PNGs — encode those from the **same RGBA buffer** so all three surfaces are pixel-identical.
 - `img` sources (file path or Buffer) are resolved by the raster layer and handed to Takumi as image nodes.
 
 **Fonts are explicit — this is the determinism mechanism.** Takumi cannot see system fonts; every font is loaded from file data. Ship one bundled OFL-licensed default (regular + bold) that is always registered; apps add faces via `export const config = { fonts: [...] }` (§8). No fontconfig, no runtime network fetch, no environment dependence.
@@ -233,7 +235,7 @@ Thin wrapper over `Bun.spawn`. Exists **only** so the agent harness can intercep
 An app is a file that default-exports a component, with an optional static config export:
 
 ```tsx
-export const config = { model: 'mk2', fonts: ['./NotoSans.ttf'] }   // pre-connection: simulator default model, extra fonts
+export const config = { defaultModel: 'mk2', fonts: ['./NotoSans.ttf'] }   // simulator/headless default model (never constrains hardware), extra fonts
 export default function App() { … }
 ```
 
@@ -300,7 +302,8 @@ Structure beats pixels for agents (the accessibility-tree lesson); PNGs are stil
 
 ### 11.2 `inkdeck agent` — JSON-lines protocol over stdio
 
-One JSON object per line. Commands (stdin) / events (stdout):
+One JSON object per line. Commands (stdin) / events (stdout). Any command may
+carry an `"id"` that is echoed on the events it produces:
 
 ```
 → {"cmd":"press","position":0}          → {"cmd":"release","position":0}
@@ -311,13 +314,14 @@ One JSON object per line. Commands (stdin) / events (stdout):
 → {"cmd":"exit"}
 
 ← {"event":"ready","manifest":{…}}
-← {"event":"rendered","changed":[0,3],"manifest":{…}}   // after every commit
-← {"event":"state","manifest":{…}}                       // reply to snapshot
+← {"event":"rendered","changed":[0,3],"manifest":{…}}   // notification: pixels changed
+← {"event":"state","manifest":{…}}                       // terminal ack (press/release/tap/advanceTime/snapshot)
+← {"event":"frames","dir":"./out","keys":1}              // terminal ack (writeFrames)
 ← {"event":"error","scope":"press","position":0,"message":"…"}
 ← {"event":"log","stream":"stderr","line":"…"}
 ```
 
-Guarantees: every command is acknowledged by at least one event; `rendered` fires only when key content actually changed; malformed input ⇒ `error` event, not a crash; EOF on stdin ⇒ clean exit.
+Guarantees: every command ends with exactly one terminal ack (`state`/`frames`/`exit`, or `error`) after its effects settled; `rendered` fires only when key content actually changed and may arrive unsolicited (pollers); malformed input ⇒ `error` event, not a crash; EOF on stdin ⇒ clean exit. The living reference is the scaffold's `CLAUDE.md` (`packages/create-inkdeck/templates/CLAUDE.md`).
 
 ### 11.3 Determinism switches
 

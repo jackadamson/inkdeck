@@ -33,8 +33,8 @@ values:
 </Deck>
 ```
 
-Hooks: `useDeckInfo()`, `useBrightness()`, `useKeyState(position)`,
-`usePoller(fn, ms)`. Subprocesses: `exec(['cmd', ...args])` (interceptable by
+Hooks: `useDeckInfo()` (geometry + `coordsOf`/`positionOf`), `useBrightness()`,
+`useKeyState(position)`, `usePoller(fn, ms)` (returns `{ refresh }`). Subprocesses: `exec(['cmd', ...args])` (interceptable by
 the test harness — prefer it over `Bun.spawn`).
 
 ## Supported styling

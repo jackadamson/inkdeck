@@ -4,25 +4,16 @@
 
 import { describe, expect, test } from 'bun:test'
 import { useState } from 'react'
-import { modelById } from '../device/models.js'
-import { VirtualTransport } from '../transport/virtual.js'
+import { openVirtualDeck } from '../transport/virtual.js'
 import { Deck, Key } from './components.js'
 import { DeckController } from './controller.js'
 import { buildManifest } from '../harness/manifest.js'
 import type { Clock } from './clock.js'
 import { FrozenClock } from './clock.js'
+import type { Logger } from './logger.js'
+import { mk2, mountVirtual } from '../test/helpers.js'
 
-const mk2 = modelById('mk2')!
-
-async function mount(element: React.ReactNode, clock?: Clock) {
-  const transport = new VirtualTransport(mk2)
-  const handle = await transport.open('virtual:0')
-  const controller = new DeckController({ model: mk2, handle, serial: transport.serial, clock })
-  await controller.start()
-  controller.render(element)
-  await controller.settled()
-  return { controller, handle: transport.handle }
-}
+const mount = (element: React.ReactNode, clock?: Clock, logger?: Logger) => mountVirtual(element, { clock, logger })
 
 describe('headless renderer', () => {
   test('renders keys, pushes JPEGs, and builds a §11.1 manifest', async () => {
@@ -56,7 +47,21 @@ describe('headless renderer', () => {
     expect(key0.hasPress).toBe(true)
     expect(key0.hasLongPress).toBe(false)
     expect(key0.hash).toBeTruthy()
-    expect(key0.image).toBe('key-0.png')
+    expect(key0.image).toBeUndefined() // only manifests written next to frames name files
+    await controller.shutdown()
+  })
+
+  test('<Key row col> addresses the same slot as position', async () => {
+    const { controller } = await mount(
+      <Deck>
+        <Key row={1} col={2}>
+          <span className="text-white">rc</span>
+        </Key>
+      </Deck>,
+    )
+    const key = buildManifest(controller).keys[0]!
+    expect(key.position).toBe(7) // mk2: 5 columns ⇒ row 1, col 2
+    expect(key.text).toEqual(['rc'])
     await controller.shutdown()
   })
 
@@ -73,8 +78,7 @@ describe('headless renderer', () => {
   })
 
   test('duplicate position throws at commit with both component stacks', async () => {
-    const transport = new VirtualTransport(mk2)
-    const handle = await transport.open('virtual:0')
+    const { handle } = await openVirtualDeck(mk2)
     const controller = new DeckController({ model: mk2, handle })
     await controller.start()
     controller.render(
@@ -123,30 +127,62 @@ describe('headless renderer', () => {
     await controller.shutdown()
   })
 
+  test('a key that threw recovers on the next good render (boundary resets when children change)', async () => {
+    let shouldThrow = true
+    let rerender: () => void = () => {}
+    function Flaky() {
+      if (shouldThrow) throw new Error('transient')
+      return <span className="text-white">fine</span>
+    }
+    function App() {
+      const [, force] = useState(0)
+      rerender = () => force((n) => n + 1)
+      return (
+        <Deck>
+          <Key position={0}>
+            <Flaky />
+          </Key>
+        </Deck>
+      )
+    }
+    const errors: string[] = []
+    const { controller } = await mount(<App />, undefined, { error: (l) => errors.push(l) })
+    expect(buildManifest(controller).keys[0]!.error).toContain('transient')
+    // Still failing on a re-render: stays on the error tile, logged once.
+    rerender()
+    await controller.settled()
+    expect(buildManifest(controller).keys[0]!.error).toContain('transient')
+    expect(errors.filter((e) => e.includes('render error: transient')).length).toBe(1)
+    // Fixed: the next render recovers.
+    shouldThrow = false
+    rerender()
+    await controller.settled()
+    const key = buildManifest(controller).keys[0]!
+    expect(key.error).toBeNull()
+    expect(key.text).toEqual(['fine'])
+    await controller.shutdown()
+  })
+
   test('out-of-range position warns once and is not rendered', async () => {
     const errors: string[] = []
-    const original = console.error
-    console.error = (msg: unknown) => errors.push(String(msg))
-    try {
-      const { controller, handle } = await mount(
-        <Deck>
-          <Key position={99}>
-            <span>ghost</span>
-          </Key>
-          <Key position={0}>
-            <span>ok</span>
-          </Key>
-        </Deck>,
-      )
-      expect(handle.keyImages.has(0)).toBe(true)
-      const warnings = errors.filter((e) => e.includes('position={99}'))
-      expect(warnings.length).toBe(1)
-      const manifest = buildManifest(controller)
-      expect(manifest.keys.some((k) => k.position === 99)).toBe(false)
-      await controller.shutdown()
-    } finally {
-      console.error = original
-    }
+    const { controller, handle } = await mount(
+      <Deck>
+        <Key position={99}>
+          <span>ghost</span>
+        </Key>
+        <Key position={0}>
+          <span>ok</span>
+        </Key>
+      </Deck>,
+      undefined,
+      { error: (line) => errors.push(line) },
+    )
+    expect(handle.keyImages.has(0)).toBe(true)
+    const warnings = errors.filter((e) => e.includes('position={99}'))
+    expect(warnings.length).toBe(1)
+    const manifest = buildManifest(controller)
+    expect(manifest.keys.some((k) => k.position === 99)).toBe(false)
+    await controller.shutdown()
   })
 
   test('press toggles state through the virtual transport; pixels update', async () => {
@@ -241,17 +277,18 @@ describe('headless renderer', () => {
         />
       </Deck>,
     )
-    // Short press: released before the threshold.
+    // Short press: released before the threshold. With a long-press armed,
+    // onPress fires on the (debounced) release.
     handle.pressKey(0)
     handle.releaseKey(0)
+    await new Promise((resolve) => setTimeout(resolve, 40))
     expect(events).toEqual(['press'])
 
-    // Long press: held past the threshold (after the contact-bounce window —
-    // a re-press hard on the heels of a release is deliberately dropped).
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    // Long press: held past the threshold.
     handle.pressKey(0)
     await new Promise((resolve) => setTimeout(resolve, 80))
     handle.releaseKey(0)
+    await new Promise((resolve) => setTimeout(resolve, 40))
     expect(events).toEqual(['press', 'long'])
     await controller.shutdown()
   })
@@ -283,7 +320,7 @@ describe('headless renderer', () => {
     await controller.shutdown()
   })
 
-  test('contact bounce is debounced: re-press within the window is dropped, releases never are', async () => {
+  test('contact bounce is debounced: a release is deferred by the window and a re-press cancels it', async () => {
     const clock = new FrozenClock()
     let presses = 0
     const { controller, handle } = await mount(
@@ -296,18 +333,109 @@ describe('headless renderer', () => {
     handle.pressKey(0)
     expect(presses).toBe(1)
     clock.advance(100)
-    // Release followed by a bounce re-press 5 ms later: dropped.
+    // Release followed by a bounce re-press 5 ms later: still held.
     handle.releaseKey(0)
     clock.advance(5)
     handle.pressKey(0)
     expect(presses).toBe(1)
+    expect(controller.isPressed(0)).toBe(true)
+    // A real release commits after the window; then a real press fires again.
+    handle.releaseKey(0)
+    clock.advance(30)
     expect(controller.isPressed(0)).toBe(false)
-    // Past the window a real press fires again.
-    clock.advance(50)
     handle.pressKey(0)
     expect(presses).toBe(2)
     handle.releaseKey(0)
+    clock.advance(30)
     expect(controller.isPressed(0)).toBe(false)
+    await controller.shutdown()
+  })
+
+  test('a bounce mid-hold does not break long-press or useKeyState', async () => {
+    const clock = new FrozenClock()
+    const events: string[] = []
+    const { controller, handle } = await mount(
+      <Deck>
+        <Key position={0} onPress={() => events.push('press')} onLongPress={() => events.push('long')} />
+      </Deck>,
+      clock,
+    )
+    handle.pressKey(0)
+    clock.advance(100)
+    handle.releaseKey(0) // bounce
+    clock.advance(3)
+    handle.pressKey(0)
+    expect(controller.isPressed(0)).toBe(true)
+    clock.advance(2000)
+    expect(events).toEqual(['long'])
+    handle.releaseKey(0)
+    clock.advance(30)
+    expect(controller.isPressed(0)).toBe(false)
+    expect(events).toEqual(['long'])
+    await controller.shutdown()
+  })
+
+  test('a commit error is reported once; the next good render settles cleanly', async () => {
+    const bad = (
+      <Deck>
+        <Key position={0} />
+        <Key position={0} />
+      </Deck>
+    )
+    const good = (
+      <Deck>
+        <Key position={0}>
+          <span className="text-white">ok</span>
+        </Key>
+      </Deck>
+    )
+    const { handle } = await openVirtualDeck(mk2)
+    const controller = new DeckController({ model: mk2, handle })
+    await controller.start()
+    controller.render(bad)
+    await expect(controller.settled()).rejects.toThrow('two <Key> elements')
+    controller.render(good)
+    await controller.settled()
+    expect(buildManifest(controller).keys[0]!.text).toEqual(['ok'])
+    await controller.shutdown()
+  })
+
+  test('rendered fires per flush round under continuous animation', async () => {
+    function Ticker() {
+      const [n, setN] = useState(0)
+      // Commit faster than the flush loop can rasterize.
+      if (n < 40) setTimeout(() => setN(n + 1), 1)
+      return (
+        <Deck>
+          <Key position={0}>
+            <span className="text-white">{String(n)}</span>
+          </Key>
+        </Deck>
+      )
+    }
+    const { handle } = await openVirtualDeck(mk2)
+    const controller = new DeckController({ model: mk2, handle })
+    await controller.start()
+    let rounds = 0
+    controller.onRendered(() => rounds++)
+    controller.render(<Ticker />)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(rounds).toBeGreaterThan(1)
+    await controller.settled()
+    await controller.shutdown()
+  })
+
+  test('a raster failure is recorded on the key and paints the error tile', async () => {
+    const { controller, handle } = await mount(
+      <Deck>
+        <Key position={0}>
+          <img src="does-not-exist.png" />
+        </Key>
+      </Deck>,
+    )
+    const key = buildManifest(controller).keys[0]!
+    expect(key.error).toContain('raster failed')
+    expect(handle.keyImages.has(0)).toBe(true)
     await controller.shutdown()
   })
 })

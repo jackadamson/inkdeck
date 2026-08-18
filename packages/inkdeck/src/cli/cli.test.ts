@@ -5,13 +5,13 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import sharp from 'sharp'
+import { imageInfo } from '../test/imageInfo.js'
 
 const CLI = join(import.meta.dir, 'index.ts')
-const EXAMPLE = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'app.tsx')
+import { MIC_MUTE_APP as EXAMPLE } from '../test/helpers.js'
 
 async function runCli(args: string[], cwd?: string) {
-  const proc = Bun.spawn(['bun', CLI, ...args], { cwd, stdout: 'pipe', stderr: 'pipe' })
+  const proc = Bun.spawn([process.execPath, CLI, ...args], { cwd, stdout: 'pipe', stderr: 'pipe' })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -40,10 +40,8 @@ describe('inkdeck CLI', () => {
     expect(key0.hasPress).toBe(true)
     expect(key0.hasLongPress).toBe(false)
 
-    const meta = await sharp(join(out, 'key-0.png')).metadata()
-    expect(meta.format).toBe('png')
-    expect(meta.width).toBe(72)
-    expect(meta.height).toBe(72)
+    const info = imageInfo(new Uint8Array(await Bun.file(join(out, 'key-0.png')).arrayBuffer()))
+    expect(info).toEqual({ format: 'png', width: 72, height: 72 })
   }, 30000)
 
   test('check exits 0 on the reference example', async () => {
@@ -57,13 +55,9 @@ describe('inkdeck CLI', () => {
     const bad = join(dir, 'app.tsx')
     writeFileSync(
       bad,
-      [
-        'export default function App() {',
-        "  const wrong: number = 'not a number'",
-        '  return null',
-        '}',
-        '',
-      ].join('\n'),
+      ['export default function App() {', "  const wrong: number = 'not a number'", '  return null', '}', ''].join(
+        '\n',
+      ),
     )
     const result = await runCli(['check', bad])
     expect(result.exitCode).toBe(1)
@@ -71,7 +65,7 @@ describe('inkdeck CLI', () => {
   }, 60000)
 
   test('check exits 1 when a key renders its error tile', async () => {
-    const fixture = join(import.meta.dir, '..', '..', '..', 'test-fixtures', 'throws-at-render.tsx')
+    const fixture = join(import.meta.dir, '..', 'test', 'fixtures', 'throws-at-render.tsx')
     const result = await runCli(['check', 'throws-at-render.tsx'], join(fixture, '..'))
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('error tile')
@@ -83,10 +77,16 @@ describe('inkdeck CLI', () => {
     expect(result.exitCode).toBe(0)
     const out = result.stdout.toLowerCase()
     // Either the friendly empty message or one serial\tmodel line per device.
-    if (out.includes('no stream deck')) {
-      expect(out).toContain('no stream deck')
+    if (out.includes('no stream deck') || out.includes('no devices')) {
+      // Empty message (macOS, nothing attached) or the no-transport fallback (Linux).
+      expect(out).toMatch(/no stream deck|no devices/)
     } else {
-      expect(result.stdout.trim().split('\n').every((l) => /^\S+\t\S+/.test(l))).toBe(true)
+      expect(
+        result.stdout
+          .trim()
+          .split('\n')
+          .every((l) => /^\S+\t\S+/.test(l)),
+      ).toBe(true)
     }
   })
 
@@ -94,5 +94,13 @@ describe('inkdeck CLI', () => {
     const result = await runCli(['frobnicate'])
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('unknown command')
+  })
+
+  test('unknown flag exits 1 with a one-line message + usage, no stack trace', async () => {
+    const result = await runCli(['render', 'app.tsx', '--bogus'])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Unknown option '--bogus'")
+    expect(result.stderr).toContain('Usage:')
+    expect(result.stderr).not.toContain('    at ')
   })
 })

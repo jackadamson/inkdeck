@@ -3,7 +3,7 @@
 // Fonts are explicit (§6.1), so nothing environment-dependent may leak in.
 //
 // The golden hashes in golden.json were recorded on macOS arm64 (Bun 1.3.11,
-// takumi 2.5.4, sharp 0.34). A mismatch on another OS/arch is a REAL M4
+// takumi 2.5.4). A mismatch on another OS/arch is a REAL M4
 // finding (a nondeterminism leak or a prebuild difference) — investigate, do
 // not blindly regenerate. To regenerate after an intentional change:
 //   INKDECK_UPDATE_GOLDEN=1 bun test packages/inkdeck/src/raster/determinism.test.ts
@@ -19,14 +19,14 @@ import { HarnessSession } from '../harness/session.js'
 import { normalizeMockExecConfig } from '../harness/mockExec.js'
 
 const CLI = join(import.meta.dir, '..', 'cli', 'index.ts')
-const EXAMPLE = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'app.tsx')
+import { MIC_MUTE_APP as EXAMPLE } from '../test/helpers.js'
 const GOLDEN_PATH = join(import.meta.dir, 'golden.json')
 
 const sha256 = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
 
 async function renderOnce(): Promise<{ png: Buffer; manifestHash: string }> {
   const out = mkdtempSync(join(tmpdir(), 'inkdeck-determinism-'))
-  const proc = Bun.spawn(['bun', CLI, 'render', EXAMPLE, '--out', out, '--model', 'mk2'], {
+  const proc = Bun.spawn([process.execPath, CLI, 'render', EXAMPLE, '--out', out, '--model', 'mk2'], {
     stdout: 'pipe',
     stderr: 'pipe',
   })

@@ -8,7 +8,7 @@ description: Working on or with inkdeck — a custom React renderer targeting El
 **inkdeck** (`@jackadamson/inkdeck`) renders React to an Elgato Stream Deck
 over raw USB HID — think Ink, but the "terminal" is a grid of LCD keys. Runtime
 is Bun (pinned in `.tool-versions`); deps are locked to react/react-reconciler,
-Takumi (raster), sharp (encode) — do not add packages (SPEC §2 is exhaustive).
+Takumi (raster + JPEG/PNG encode) — do not add packages (SPEC §2 is exhaustive).
 
 ## Architecture (4 layers, strictly separated)
 
@@ -16,7 +16,7 @@ Takumi (raster), sharp (encode) — do not add packages (SPEC §2 is exhaustive)
 React app (app.tsx default-exports a component)
 Renderer   react-reconciler hostConfig → per-key scene trees → dirty diffing
            packages/inkdeck/src/renderer/ (controller.ts is the heart)
-Raster     scene → Takumi RGBA → sharp JPEG(device)/PNG(files), same buffer
+Raster     scene → Takumi RGBA → Takumi JPEG(device)/PNG(files), same buffer
            packages/inkdeck/src/raster/   fonts are explicit — determinism
 Device     model tables + gen-2 report framing
            packages/inkdeck/src/device/   (hardware-verified on an XL)
@@ -36,10 +36,11 @@ this; never bypass it.
   Read the manifest, not the pixels.
 - `inkdeck agent app.tsx --freeze-time --mock-exec mocks.json` — JSON-lines
   stdio: commands `press/release/tap/snapshot/advanceTime/writeFrames/exit`,
-  events `ready/rendered/state/frames/error/log/exit`. `rendered` fires only
-  on real pixel change; every command is acknowledged; malformed input →
-  `error` event. Full reference: scaffold template
-  `packages/create-inkdeck/templates/CLAUDE.md`.
+  events `ready/rendered/state/frames/error/log/exit`. Every command ends
+  with exactly one terminal ack (`state`/`frames`/`exit`, or `error`) that
+  echoes the command's optional `id`; `rendered` is a notification that fires
+  only on real pixel change; malformed input → `error` event. Full reference:
+  scaffold template `packages/create-inkdeck/templates/CLAUDE.md`.
 - In `bun test`: `renderDeck` from `@jackadamson/inkdeck/testing`
   (`deck.key(0).text`, `deck.tap(0)`, `deck.advanceTime(ms)`,
   `deck.unmatchedExecs`).
@@ -65,7 +66,7 @@ this; never bypass it.
 
 ## Common patterns
 
-- Poll external state: `usePoller(async () => { ... await exec([...]) }, ms)`
+- Poll external state: `const { refresh } = usePoller(async () => { ... await exec([...]) }, ms)` — always calls the latest callback; `refresh()` re-polls now (e.g. right after acting)
   + optimistic update in `onPress`, next poll reconciles (see
   `examples/mic-mute/app.tsx`, the reference app + test).
 - Hardware debugging: `bun packages/inkdeck/scripts/hardware-smoke.ts`

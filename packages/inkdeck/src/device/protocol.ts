@@ -12,7 +12,7 @@
 //     before Gen2InputService sees data with KEY_DATA_OFFSET = 3
 //     (generic-gen2.ts), so in the *raw* report keys start at byte 1 + 3 = 4.
 //
-// Values are unverified on hardware until M2 (SPEC §13).
+// Verified on an XL (M2): image packets, brightness, reset and input reports.
 
 import type { Model } from './models.js'
 

@@ -5,11 +5,7 @@
 
 import type { Model } from '../device/models.js'
 import { VENDOR_ID } from '../device/models.js'
-import {
-  buildInputReport,
-  FEATURE_REPORT_LENGTH,
-  IMAGE_HEADER_LENGTH,
-} from '../device/protocol.js'
+import { buildInputReport, FEATURE_REPORT_LENGTH, IMAGE_HEADER_LENGTH } from '../device/protocol.js'
 import { DeviceDisconnectedError, type DeviceInfo, type Transport, type TransportHandle } from './iface.js'
 
 export class VirtualTransport implements Transport {
@@ -52,6 +48,13 @@ interface PendingImage {
   nextPart: number
 }
 
+/** Open a virtual deck in one call: the handle plus the serial it reports. */
+export async function openVirtualDeck(model: Model): Promise<{ handle: VirtualHandle; serial: string }> {
+  const transport = new VirtualTransport(model)
+  await transport.open('virtual:0')
+  return { handle: transport.handle, serial: transport.serial }
+}
+
 export class VirtualHandle implements TransportHandle {
   readonly model: Model
   /** Last complete image (JPEG bytes) written per key index. */
@@ -81,9 +84,7 @@ export class VirtualHandle implements TransportHandle {
       )
     }
     if (report[0] !== 0x02 || report[1] !== 0x07) {
-      throw new Error(
-        `[inkdeck] VirtualTransport: unrecognized output report [${report[0]}, ${report[1]}]`,
-      )
+      throw new Error(`[inkdeck] VirtualTransport: unrecognized output report [${report[0]}, ${report[1]}]`)
     }
     const view = new DataView(report.buffer, report.byteOffset)
     const keyIndex = view.getUint8(2)
@@ -98,9 +99,7 @@ export class VirtualHandle implements TransportHandle {
     }
     if (partIndex !== pending.nextPart) {
       this.#pending.delete(keyIndex)
-      throw new Error(
-        `[inkdeck] VirtualTransport: key ${keyIndex} got part ${partIndex}, expected ${pending.nextPart}`,
-      )
+      throw new Error(`[inkdeck] VirtualTransport: key ${keyIndex} got part ${partIndex}, expected ${pending.nextPart}`)
     }
     pending.parts.push(report.slice(IMAGE_HEADER_LENGTH, IMAGE_HEADER_LENGTH + bodyLength))
     pending.nextPart++
@@ -129,12 +128,10 @@ export class VirtualHandle implements TransportHandle {
       this.keyImages.clear()
       return
     }
-    throw new Error(
-      `[inkdeck] VirtualTransport: unrecognized feature report [${report[0]}, ${report[1]}]`,
-    )
+    throw new Error(`[inkdeck] VirtualTransport: unrecognized feature report [${report[0]}, ${report[1]}]`)
   }
 
-  async getFeature(reportId: number, length: number): Promise<Uint8Array> {
+  async getFeature(_reportId: number, length: number): Promise<Uint8Array> {
     this.#assertOpen()
     return new Uint8Array(Math.max(length, FEATURE_REPORT_LENGTH))
   }

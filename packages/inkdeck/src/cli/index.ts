@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // inkdeck CLI (SPEC §9). Arg parsing via util.parseArgs — no CLI helper deps (§2).
 
-import { parseArgs } from 'node:util'
+import { parseArgs as nodeParseArgs } from 'node:util'
+import type { RunningCommand } from './lifecycle.js'
 
 const USAGE = `Usage:
   inkdeck render <app.tsx> --out DIR [--model M]   headless one-shot: PNGs + manifest.json
@@ -14,7 +15,21 @@ const USAGE = `Usage:
   inkdeck create <dir>                             scaffold a new app
 `
 
-async function main(): Promise<number> {
+/** A bad invocation: printed as one line + usage, no stack trace. */
+class UsageError extends Error {}
+
+/** util.parseArgs in strict mode; unknown flags/missing values become UsageErrors. */
+const parseArgs: typeof nodeParseArgs = (config) => {
+  try {
+    return nodeParseArgs(config)
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? ''
+    if (code.startsWith('ERR_PARSE_ARGS')) throw new UsageError(error instanceof Error ? error.message : String(error))
+    throw error
+  }
+}
+
+async function main(): Promise<number | RunningCommand> {
   const [command, ...rest] = Bun.argv.slice(2)
 
   switch (command) {
@@ -117,9 +132,12 @@ async function main(): Promise<number> {
         return 1
       }
       // The scaffold lives in @jackadamson/create-inkdeck (§2 keeps it out of
-      // this package's dependency tree). Try the installed package, then the
-      // monorepo sibling; otherwise point at bun create.
-      const candidates = ['@jackadamson/create-inkdeck', '../../../create-inkdeck/index.ts']
+      // this package's dependency tree). Try the installed package; in the
+      // monorepo (development only) fall back to the workspace sibling;
+      // otherwise point at bun create.
+      const sibling = new URL('../../../create-inkdeck/index.ts', import.meta.url)
+      const candidates = ['@jackadamson/create-inkdeck']
+      if (await Bun.file(sibling).exists()) candidates.push(sibling.href)
       for (const specifier of candidates) {
         let mod: { createProject: (dir: string) => Promise<void> }
         try {
@@ -148,10 +166,26 @@ async function main(): Promise<number> {
   }
 }
 
-main().then(
+/** Only place the process exits or listens for signals: run the command,
+ *  hand SIGINT/SIGTERM to its shutdown(), exit with its code. */
+async function run(): Promise<number> {
+  const result = await main()
+  if (typeof result === 'number') return result
+  const stop = () => void result.shutdown()
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+  return result.done
+}
+
+run().then(
   (code) => process.exit(code),
   (error) => {
-    console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    if (error instanceof UsageError) {
+      console.error(`[inkdeck] ${error.message}`)
+      console.error(USAGE)
+    } else {
+      console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    }
     process.exit(1)
   },
 )

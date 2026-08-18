@@ -9,14 +9,14 @@
 //   expect(deck.key(0).text).toContain('MUTED')
 
 import type { ComponentType, ReactNode } from 'react'
-import { requireRenderableModel } from './device/models.js'
+import { requireRenderableModel, type RenderableModelId } from './device/models.js'
 import { HarnessSession, toElement } from './harness/session.js'
 import { normalizeMockExecConfig, type ExecMock, type MockExecConfig } from './harness/mockExec.js'
 import type { Manifest, KeyManifest } from './harness/manifest.js'
 
 export interface RenderDeckOptions {
   /** Model id (default: 'mk2'). */
-  model?: string
+  model?: RenderableModelId
   /** Start the injectable clock frozen; drive it with deck.advanceTime(ms). */
   freezeTime?: boolean
   /** Mock table for exec() — the mocks.json shape, or a bare mock array. */
@@ -47,19 +47,14 @@ export interface TestDeck {
   shutdown(): Promise<void>
 }
 
-export async function renderDeck(
-  app: ReactNode | ComponentType,
-  options: RenderDeckOptions = {},
-): Promise<TestDeck> {
+export async function renderDeck(app: ReactNode | ComponentType, options: RenderDeckOptions = {}): Promise<TestDeck> {
   const model = requireRenderableModel(options.model ?? 'mk2')
   const unmatchedExecs: string[] = []
   const session = await HarnessSession.start({
     model,
     element: toElement(app),
     freezeTime: options.freezeTime,
-    mockExec: options.mockExec
-      ? normalizeMockExecConfig(options.mockExec, 'renderDeck({ mockExec })')
-      : undefined,
+    mockExec: options.mockExec ? normalizeMockExecConfig(options.mockExec, 'renderDeck({ mockExec })') : undefined,
     onUnmatchedExec: (command) => unmatchedExecs.push(command),
     assetDir: options.assetDir,
   })

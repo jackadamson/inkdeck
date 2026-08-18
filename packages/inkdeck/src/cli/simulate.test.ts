@@ -7,7 +7,8 @@ import { createElement } from 'react'
 import { modelById } from '../device/models.js'
 import { Deck, Key } from '../renderer/components.js'
 import { HarnessSession } from '../harness/session.js'
-import { startSimulatorServer, type SimulatorServer } from './simulate.js'
+import { MIC_MUTE_APP } from '../test/helpers.js'
+import { simulateCommand, startSimulatorServer, type SimulatorServer } from './simulate.js'
 
 let session: HarnessSession
 let sim: SimulatorServer
@@ -19,7 +20,11 @@ beforeAll(async () => {
     element: createElement(
       Deck,
       null,
-      createElement(Key, { position: 0, onPress: () => pressed++ }, createElement('span', { className: 'text-white' }, 'sim')),
+      createElement(
+        Key,
+        { position: 0, onPress: () => pressed++ },
+        createElement('span', { className: 'text-white' }, 'sim'),
+      ),
     ),
   })
   sim = startSimulatorServer(session.controller, session.handle, session.controller.model)
@@ -65,6 +70,10 @@ describe('browser simulator (§16)', () => {
     // No external resources: the page must be self-contained (§16).
     expect(html).not.toMatch(/src\s*=\s*"http/)
     expect(html).not.toMatch(/href\s*=\s*"http/)
+    const csp = res.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain(`connect-src ws://127.0.0.1:${sim.port}`)
+    expect(csp).toContain("frame-ancestors 'none'")
   })
 
   test('rejects requests with a forged Host header (DNS rebinding)', async () => {
@@ -102,9 +111,16 @@ describe('browser simulator (§16)', () => {
     }
 
     await until(() => messages.some((m) => m.type === 'hello'))
-    const hello = messages.find((m) => m.type === 'hello')! as { model: { columns: number; rows: number } }
+    const hello = messages.find((m) => m.type === 'hello')! as {
+      model: { columns: number; rows: number }
+      brightness: number
+    }
     expect(hello.model.columns).toBe(5)
     expect(hello.model.rows).toBe(3)
+    expect(hello.brightness).toBe(100)
+    // The page applies hello.brightness on connect (not only on later changes).
+    const html = await (await fetch(`${origin()}/`)).text()
+    expect(html).toContain('applyBrightness(msg.brightness)')
 
     // Initial state push: key 0's server-rendered PNG.
     await until(() => messages.some((m) => m.type === 'key' && m.position === 0))
@@ -123,5 +139,11 @@ describe('browser simulator (§16)', () => {
     await until(() => messages.some((m) => m.type === 'error'))
 
     ws.close()
+  })
+
+  test('simulateCommand runs in-process and shuts down idempotently on request', async () => {
+    const running = await simulateCommand(MIC_MUTE_APP, { model: 'mk2' })
+    await Promise.all([running.shutdown(), running.shutdown()])
+    expect(await running.done).toBe(0)
   })
 })

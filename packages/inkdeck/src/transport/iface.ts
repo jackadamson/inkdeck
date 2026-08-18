@@ -46,3 +46,13 @@ export class DeviceDisconnectedError extends Error {
     this.name = 'DeviceDisconnectedError'
   }
 }
+
+/** A device I/O failure that is *not* a disconnect (the device is still there
+ *  but rejected the report). Transports throw this from write/feature calls
+ *  so callers can tell it from a plain bug without matching on messages. */
+export class TransportIOError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TransportIOError'
+  }
+}

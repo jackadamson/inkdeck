@@ -3,14 +3,14 @@
 // command acknowledged, rendered only on actual change, malformed input is an
 // error event not a crash, EOF exits cleanly.
 
+import type { Subprocess } from 'bun'
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(import.meta.dir, '..', 'cli', 'index.ts')
-const EXAMPLE = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'app.tsx')
-const MOCKS = join(import.meta.dir, '..', '..', '..', '..', 'examples', 'mic-mute', 'mocks.json')
+import { MIC_MUTE_APP as EXAMPLE, MIC_MUTE_MOCKS as MOCKS } from '../test/helpers.js'
 
 interface AgentEvent {
   event: string
@@ -19,14 +19,14 @@ interface AgentEvent {
 
 /** Drives one agent subprocess; reads events as newline-delimited JSON. */
 class AgentClient {
-  proc: ReturnType<typeof Bun.spawn>
+  proc: Subprocess<'pipe', 'pipe', 'pipe'>
   #events: AgentEvent[] = []
   #buffer = ''
   #waiters: Array<() => void> = []
   #reader: Promise<void>
 
   constructor(args: string[]) {
-    this.proc = Bun.spawn(['bun', CLI, 'agent', ...args], {
+    this.proc = Bun.spawn([process.execPath, CLI, 'agent', ...args], {
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -38,8 +38,9 @@ class AgentClient {
     const decoder = new TextDecoder()
     for await (const chunk of this.proc.stdout as ReadableStream<Uint8Array>) {
       this.#buffer += decoder.decode(chunk, { stream: true })
-      let idx: number
-      while ((idx = this.#buffer.indexOf('\n')) !== -1) {
+      for (;;) {
+        const idx = this.#buffer.indexOf('\n')
+        if (idx === -1) break
         const line = this.#buffer.slice(0, idx)
         this.#buffer = this.#buffer.slice(idx + 1)
         if (line.trim().length === 0) continue
@@ -90,6 +91,9 @@ function keyText(event: AgentEvent, position: number): string[] {
   return manifest.keys.find((k) => k.position === position)?.text ?? []
 }
 
+// NOTE: the tests below share ONE agent subprocess and run in order — each
+// builds on the state the previous one left (press → LIVE, then writeFrames
+// asserts LIVE). Do not `.only` one of them; the last test starts its own.
 describe('inkdeck agent protocol (§11.2)', () => {
   const client = new AgentClient([EXAMPLE, '--freeze-time', '--mock-exec', MOCKS])
   afterAll(async () => {
@@ -102,28 +106,39 @@ describe('inkdeck agent protocol (§11.2)', () => {
     expect(ready.event).toBe('ready')
     expect(keyText(ready, 0)).toEqual(['mic', 'LIVE'])
 
-    // press ⇒ optimistic toggle ⇒ rendered with changed=[0].
-    client.send({ cmd: 'press', position: 0 })
-    const rendered = await client.nextNonLog()
-    expect(rendered.event).toBe('rendered')
-    expect(rendered.changed).toEqual([0])
-    expect(keyText(rendered, 0)).toEqual(['mic', 'MUTED'])
+    // press ⇒ optimistic MUTED, then the app re-polls at once (refresh) and
+    // the mock still reads 75 ⇒ LIVE. Depending on raster coalescing that is
+    // zero or more rendered notifications (changed=[0]) — when the MUTED frame
+    // is coalesced away the pixels end up unchanged — followed by exactly one
+    // state ack echoing the command id and showing LIVE.
+    client.send({ cmd: 'press', position: 0, id: 'p1' })
+    let ack = await client.nextNonLog()
+    while (ack.event === 'rendered') {
+      expect(ack.changed).toEqual([0])
+      expect(ack.id).toBe('p1')
+      ack = await client.nextNonLog()
+    }
+    expect(ack.event).toBe('state')
+    expect(ack.id).toBe('p1')
+    expect(keyText(ack, 0)).toEqual(['mic', 'LIVE'])
 
-    // release changes no pixels ⇒ acknowledged with state, not rendered.
-    client.send({ cmd: 'release', position: 0 })
-    const releaseAck = await client.nextNonLog()
-    expect(releaseAck.event).toBe('state')
-
-    // snapshot reflects the same manifest.
+    // snapshot reflects the same manifest (no id ⇒ no id on the ack).
     client.send({ cmd: 'snapshot' })
     const state = await client.nextNonLog()
     expect(state.event).toBe('state')
-    expect(keyText(state, 0)).toEqual(['mic', 'MUTED'])
+    expect(state.id).toBeUndefined()
+    expect(keyText(state, 0)).toEqual(['mic', 'LIVE'])
 
-    // advanceTime fires the next poll; the mock still reads 75 ⇒ LIVE again.
+    // release changes no pixels ⇒ a state ack, no rendered.
+    client.send({ cmd: 'release', position: 0, id: 2 })
+    const releaseAck = await client.nextNonLog()
+    expect(releaseAck.event).toBe('state')
+    expect(releaseAck.id).toBe(2)
+
+    // advanceTime fires the next poll; the mock still reads 75 ⇒ no change ⇒ state.
     client.send({ cmd: 'advanceTime', ms: 1000 })
     const reconciled = await client.nextNonLog()
-    expect(reconciled.event).toBe('rendered')
+    expect(reconciled.event).toBe('state')
     expect(keyText(reconciled, 0)).toEqual(['mic', 'LIVE'])
   })
 

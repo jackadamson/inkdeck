@@ -1,16 +1,24 @@
-// `inkdeck start <app.tsx> [--device S]` — run once against hardware (SPEC §9).
-// `inkdeck dev` reuses this with watch=true: minimal re-render-on-save for M2;
-// the no-flicker hot-reload polish (changed-set logging, module cache surgery)
-// is M4.
+// `inkdeck start <app.tsx> [--device S]` — run against hardware (SPEC §9),
+// waiting for the deck and surviving unplug/replug. `inkdeck dev` reuses this
+// with watch=true (hot reload, see watchApp).
 
 import { watch } from 'node:fs'
-import { basename, dirname } from 'node:path'
-import { createElement, type ComponentType } from 'react'
-import { hardwareTransport } from '../device/discovery.js'
+import { dirname, sep } from 'node:path'
+import { createElement } from 'react'
+import { hardwareTransport, selectDevice } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
-import { DeckController } from '../renderer/controller.js'
-import type { DeviceInfo, Transport, TransportHandle } from '../transport/iface.js'
-import { loadApp } from './headless.js'
+import type { DeckController } from '../renderer/controller.js'
+import { bootDeck } from '../session.js'
+import { longRunning, type RunningCommand } from './lifecycle.js'
+import {
+  DeviceDisconnectedError,
+  TransportIOError,
+  type DeviceInfo,
+  type Transport,
+  type TransportHandle,
+} from '../transport/iface.js'
+import { loadApp } from './loadApp.js'
+import { DEV_BUNDLE_NAME, loadAppBundle, removeAppBundle } from './devBundle.js'
 
 export interface StartOptions {
   device?: string
@@ -20,6 +28,11 @@ export interface StartOptions {
 
 const DEVICE_POLL_MS = 1000
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Errors that mean "the device went away / rejected us", as opposed to a bug. */
+function isDeviceError(error: unknown): boolean {
+  return error instanceof DeviceDisconnectedError || error instanceof TransportIOError
+}
 
 /**
  * Resolve the target device, waiting for it to appear if necessary — both
@@ -32,18 +45,10 @@ async function waitForDevice(transport: Transport, wanted: string | undefined): 
   let announced = false
   for (;;) {
     const devices = await transport.list()
-    if (wanted) {
-      const match = devices.find((d) => d.serial === wanted)
-      if (match) return match
-    } else {
-      if (devices.length === 1) return devices[0]
-      if (devices.length > 1) {
-        const listing = devices.map((d) => `  ${d.serial} (${d.model})`).join('\n')
-        throw new Error(
-          `[inkdeck] multiple Stream Decks attached — pick one with --device <serial> or INKDECK_DEVICE:\n${listing}`,
-        )
-      }
-    }
+    const selection = selectDevice(devices, wanted)
+    if (selection.kind === 'selected') return selection.device
+    if (selection.kind === 'ambiguous') throw new Error(selection.message)
+    // 'absent': keep waiting.
     if (!announced) {
       announced = true
       console.error(`[inkdeck] waiting for ${wanted ? `Stream Deck ${wanted}` : 'a Stream Deck'}…`)
@@ -76,59 +81,78 @@ async function acquireDevice(
 }
 
 /**
- * Minimal reload-on-save (M2 semantics; the no-flicker/changed-set polish is
- * M4): cache-busting dynamic import so the transport handle and controller
- * stay alive; a broken save logs and keeps watching (§10). Shared by
- * `dev` (hardware) and `dev --simulate`.
+ * Reload-on-save for `dev` (hardware and --simulate). Every save re-bundles
+ * the app's whole module graph (see devBundle.ts) and re-renders into the
+ * live controller, so the transport handle stays open and only keys whose
+ * pixels changed repaint. A broken save logs and keeps watching (§10).
  */
-export function watchApp(absPath: string, displayPath: string, controller: DeckController): void {
-  let generation = 0
+export function watchApp(absPath: string, displayPath: string, controller: DeckController): () => void {
+  const appDir = dirname(absPath)
   let reloading = false
-  // Prove only dirty keys repaint (§13 M4): collect the repainted positions
-  // across each reload and log the set.
+  let dirty = false
   let repainted: number[] = []
-  controller.onRendered((changed) => {
+  const unsubscribe = controller.onRendered((changed) => {
     repainted.push(...changed)
   })
-  const reload = async () => {
-    generation++
-    try {
-      const mod = await import(`${absPath}?inkdeck-reload=${generation}`)
-      const App = mod.default as ComponentType
-      if (typeof App !== 'function') {
-        console.error(`[inkdeck] ${displayPath} no longer default-exports a component — keeping the previous render`)
-        return
-      }
-      repainted = []
-      controller.render(createElement(App))
-      await controller.settled()
-      const changedSet = [...new Set(repainted)].sort((a, b) => a - b)
-      console.error(
-        changedSet.length > 0
-          ? `[inkdeck] reloaded ${displayPath} — repainted keys [${changedSet.join(', ')}]`
-          : `[inkdeck] reloaded ${displayPath} — no visual change`,
-      )
-    } catch (error) {
-      console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-    } finally {
-      reloading = false
-    }
-  }
-  // Watch the parent directory, not the file: editors (and sed -i) save via
-  // write-to-temp + rename, which replaces the inode and silently kills a
-  // file-scoped watcher after the first save.
-  const base = basename(absPath)
-  watch(dirname(absPath), (_event, filename) => {
-    if (filename && filename !== base) return
-    if (reloading) return
+  const reload = async (): Promise<void> => {
     reloading = true
+    do {
+      dirty = false
+      try {
+        const bundle = await loadAppBundle(absPath)
+        // Image bytes are cached by src; a saved asset must be re-read.
+        controller.raster.clearImageCache()
+        if (bundle.config.fonts?.length) {
+          await controller.raster.loadAppFonts(bundle.config.fonts, appDir)
+        }
+        repainted = []
+        controller.render(createElement(bundle.App))
+        await controller.settled()
+        const changedSet = [...new Set(repainted)].sort((a, b) => a - b)
+        console.error(
+          changedSet.length > 0
+            ? `[inkdeck] reloaded ${displayPath} — repainted keys [${changedSet.join(', ')}]`
+            : `[inkdeck] reloaded ${displayPath} — no visual change`,
+        )
+      } catch (error) {
+        console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+      }
+    } while (dirty) // a save landed mid-reload: go again with the latest files
+    reloading = false
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = (): void => {
+    if (reloading) {
+      dirty = true
+      return
+    }
     // Debounce editor save bursts (write + rename events).
-    setTimeout(() => void reload(), 50)
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      void reload()
+    }, 50)
+  }
+  // Watch the app directory recursively (editors save via write-to-temp +
+  // rename, which kills a file-scoped watcher; and imported modules live
+  // anywhere under the app dir). Skip node_modules, VCS dirs and our own
+  // bundle output.
+  const watcher = watch(appDir, { recursive: true }, (_event, filename) => {
+    if (!filename) return schedule()
+    const rel = String(filename)
+    if (rel === DEV_BUNDLE_NAME || rel.split(sep).some((part) => part === 'node_modules' || part === '.git')) return
+    schedule()
   })
-  console.error(`[inkdeck] watching ${displayPath} — save to reload, Ctrl-C to exit`)
+  console.error(`[inkdeck] watching ${displayPath} (and everything under ${appDir}) — save to reload, Ctrl-C to exit`)
+  return () => {
+    watcher.close()
+    if (timer) clearTimeout(timer)
+    unsubscribe()
+    void removeAppBundle(absPath)
+  }
 }
 
-export async function startCommand(appPath: string, options: StartOptions = {}): Promise<number> {
+export async function startCommand(appPath: string, options: StartOptions = {}): Promise<number | RunningCommand> {
   const app = await loadApp(appPath)
 
   const { transport, reason } = await hardwareTransport()
@@ -138,67 +162,79 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   }
 
   let controller: DeckController | null = null
-  let shuttingDown = false
-  const shutdown = async (code: number) => {
-    if (shuttingDown) return
-    shuttingDown = true
-    // Clear deck, reset, close transport, exit (§9).
+  let stopWatch: (() => void) | null = null
+  const { running, finish } = longRunning(async () => {
+    stopWatch?.()
+    // Clear deck, reset, close transport (§9).
     await controller?.shutdown()
-    process.exit(code)
-  }
-  process.on('SIGINT', () => void shutdown(0))
-  process.on('SIGTERM', () => void shutdown(0))
+  })
+  let shuttingDown = false
+  void running.done.then(() => {
+    shuttingDown = true
+  })
 
   const wanted = options.device ?? process.env.INKDECK_DEVICE
   const { info, handle } = await acquireDevice(transport, wanted)
   const model = requireRenderableModel(info.model)
   console.error(`[inkdeck] using ${model.id} ${info.serial} (${model.columns}×${model.rows})`)
 
-  controller = new DeckController({
-    model,
-    handle,
-    serial: info.serial,
-    assetDir: app.appDir,
-    debug: options.debug,
-  })
-  const deck = controller
+  let deck: DeckController
+  try {
+    ;({ controller: deck } = await bootDeck({
+      element: createElement(app.App),
+      target: { kind: 'hardware', handle, model, serial: info.serial },
+      assetDir: app.appDir,
+      fonts: app.config.fonts,
+      debug: options.debug,
+    }))
+  } catch (error) {
+    console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+    await handle.close().catch(() => {})
+    return 1
+  }
+  controller = deck
 
   // Unplug ⇒ one line, keep the React tree alive, wait for the same deck to
-  // come back, reattach, repaint everything. Autostart survives replugs.
+  // come back, reattach, repaint everything. Autostart survives replugs, and
+  // a deck that drops again mid-handshake is simply waited for again — only
+  // a non-device error ends the session.
   deck.onDeviceLost(() => {
     void (async () => {
       console.error('[inkdeck] device disconnected')
-      try {
+      for (;;) {
         const { handle: reopened } = await acquireDevice(transport, info.serial)
-        if (shuttingDown) return
-        await deck.replaceHandle(reopened)
-        console.error(`[inkdeck] reconnected to ${info.serial} — repainting`)
-      } catch (error) {
-        console.error(`[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-        await shutdown(1)
+        if (shuttingDown) {
+          await reopened.close().catch(() => {})
+          return
+        }
+        try {
+          await deck.replaceHandle(reopened)
+          console.error(`[inkdeck] reconnected to ${info.serial} — repainting`)
+          return
+        } catch (error) {
+          if (isDeviceError(error)) {
+            console.error(
+              `[inkdeck] reconnect handshake failed (${error instanceof Error ? error.message : error}) — waiting for the deck again`,
+            )
+            await reopened.close().catch(() => {})
+            await sleep(DEVICE_POLL_MS)
+            continue
+          }
+          console.error(
+            `[inkdeck] reconnect failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`,
+          )
+          await finish(1)
+          return
+        }
       }
     })()
   })
 
-  try {
-    if (app.config.fonts?.length) {
-      await deck.raster.loadAppFonts(app.config.fonts, app.appDir)
-    }
-    await deck.start()
-    deck.render(createElement(app.App))
-    await deck.settled()
-  } catch (error) {
-    console.error(`[inkdeck] ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-    await shutdown(1)
-    return 1
-  }
-
   if (options.watch) {
-    watchApp(app.appPath, appPath, deck)
+    stopWatch = watchApp(app.appPath, appPath, deck)
   }
 
   // Long-running from here: the IOKit run-loop pump interval keeps the
-  // process alive, and exit happens through the signal handlers above —
-  // resolving would let index.ts process.exit() and kill the session.
-  return new Promise<number>(() => {})
+  // process alive; index.ts ends the session on SIGINT/SIGTERM via shutdown().
+  return running
 }

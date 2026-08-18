@@ -82,3 +82,31 @@ export class FrozenClock implements Clock {
     this.#now = target
   }
 }
+
+/**
+ * A Clock whose callbacks run inside `enter` — used by the controller so
+ * usePoller / framework timers execute in the session's exec scope.
+ */
+export class ScopedClock implements Clock {
+  readonly inner: Clock
+  readonly #enter: <T>(fn: () => T) => T
+  constructor(inner: Clock, enter: <T>(fn: () => T) => T) {
+    this.inner = inner
+    this.#enter = enter
+  }
+  now(): number {
+    return this.inner.now()
+  }
+  setTimeout(fn: () => void, ms: number): number {
+    return this.inner.setTimeout(() => this.#enter(fn), ms)
+  }
+  clearTimeout(id: number): void {
+    this.inner.clearTimeout(id)
+  }
+  setInterval(fn: () => void, ms: number): number {
+    return this.inner.setInterval(() => this.#enter(fn), ms)
+  }
+  clearInterval(id: number): void {
+    this.inner.clearInterval(id)
+  }
+}

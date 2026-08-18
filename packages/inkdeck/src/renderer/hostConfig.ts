@@ -17,6 +17,14 @@ let currentUpdatePriority: number = NoEventPriority
 
 const HostTransitionContext = createContext<null>(null)
 
+/** Insert `child` before `before` (or append when null), moving it if already present. */
+function insertChild(siblings: HostNode[], child: HostNode, before: HostNode | null): void {
+  const existing = siblings.indexOf(child)
+  if (existing !== -1) siblings.splice(existing, 1)
+  const index = before ? siblings.indexOf(before) : -1
+  siblings.splice(index === -1 ? siblings.length : index, 0, child)
+}
+
 const hostConfig = {
   supportsMutation: true,
   supportsPersistence: false,
@@ -87,23 +95,26 @@ const hostConfig = {
   },
   detachDeletedInstance(): void {},
 
-  // Mutation methods
+  // Mutation methods.
+  //
+  // React *moves* keyed children by re-inserting them without a removeChild
+  // first, so every insert must evict an existing occurrence of `child` or
+  // the tree ends up holding the same node twice (duplicated manifest text,
+  // spurious duplicate-position errors).
   appendChild(parent: HostElement, child: HostNode): void {
-    parent.children.push(child)
+    insertChild(parent.children, child, null)
   },
 
   appendChildToContainer(container: HostRoot, child: HostNode): void {
-    container.children.push(child)
+    insertChild(container.children, child, null)
   },
 
   insertBefore(parent: HostElement, child: HostNode, before: HostNode): void {
-    const index = parent.children.indexOf(before)
-    parent.children.splice(index === -1 ? parent.children.length : index, 0, child)
+    insertChild(parent.children, child, before)
   },
 
   insertInContainerBefore(container: HostRoot, child: HostNode, before: HostNode): void {
-    const index = container.children.indexOf(before)
-    container.children.splice(index === -1 ? container.children.length : index, 0, child)
+    insertChild(container.children, child, before)
   },
 
   removeChild(parent: HostElement, child: HostNode): void {
@@ -152,7 +163,11 @@ const hostConfig = {
 
   // React 19 additions
   NotPendingTransition: null,
-  HostTransitionContext: HostTransitionContext as never,
+  // React's public Context type lacks the reconciler's internal fields; the
+  // runtime object is the same thing.
+  HostTransitionContext: HostTransitionContext as unknown as Parameters<
+    typeof ReactReconciler
+  >[0]['HostTransitionContext'],
 
   setCurrentUpdatePriority(newPriority: number): void {
     currentUpdatePriority = newPriority
@@ -189,6 +204,15 @@ const hostConfig = {
   },
 }
 
-// The published @types lag the 0.32 runtime; the config above matches the
-// runtime contract, so silence the structural mismatch at the boundary.
-export const reconciler = ReactReconciler(hostConfig as never)
+export const reconciler = ReactReconciler(hostConfig)
+
+/**
+ * Force pending passive effects and sync-lane work to run now. Both exist
+ * on the 0.32 runtime (flushPassiveEffects/flushSyncWork) but are missing
+ * from the published types, hence the structural cast.
+ */
+export function flushReact(): void {
+  const r = reconciler as unknown as { flushPassiveEffects?: () => boolean; flushSyncWork?: () => void }
+  r.flushPassiveEffects?.()
+  r.flushSyncWork?.()
+}

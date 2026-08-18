@@ -1,12 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { modelById } from './models.js'
-import {
-  buildInputReport,
-  encodeBrightness,
-  encodeKeyImagePackets,
-  encodeReset,
-  parseInputReport,
-} from './protocol.js'
+import { buildInputReport, encodeBrightness, encodeKeyImagePackets, encodeReset, parseInputReport } from './protocol.js'
 
 const mk2 = modelById('mk2')!
 

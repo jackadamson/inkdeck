@@ -25,7 +25,7 @@ Status legend: ✅ done · 🔨 in progress · ⬜ not started · ⏸ blocked (r
 - ✅ Hooks: `useDeckInfo`, `useBrightness`, `useKeyState`, `usePoller` (on the injectable clock; `SystemClock`/`FrozenClock` in `renderer/clock.ts`)
 - ✅ `exec` wrapper over `Bun.spawn` with interceptor seam for `--mock-exec` (M3)
 - ✅ Scene hashing (skip render) + RGBA output dedup (skip push) + coalesced flush with input-priority ordering (§6.2)
-- ✅ Raster pipeline: scene → Takumi RGBA → sharp model transform → JPEG 4:4:4 (device) / PNG (render command) from the same RGBA buffer
+- ✅ Raster pipeline: scene → Takumi RGBA → model transform + JPEG 4:4:4 (device) / PNG (render command), all Takumi since 2026-08-18 (sharp removed, see DECISIONS), from the same RGBA buffer
 - ✅ Manifest builder (§11.1: text in document order, image hash, error, hasPress/hasLongPress)
 - ✅ `inkdeck render <app> --out DIR --model M` (PNGs + manifest.json)
 - ✅ `inkdeck check <app>` (typecheck via dynamically resolved `typescript` + one headless render; exit 0/1)
@@ -62,7 +62,7 @@ Status legend: ✅ done · 🔨 in progress · ⬜ not started · ⏸ blocked (r
 - ✅ `dev` hot reload: transport handle stays alive across reloads; only dirty keys repaint and the changed set is logged (`repainted keys [0]` / `no visual change`); watcher observes the **parent directory** (editors save via write-rename, which kills a file-scoped watcher after the first save — found live); unit test proves a re-render with one key changed repaints only that key
 - ✅ Scaffold: `packages/create-inkdeck` (`bun create @jackadamson/inkdeck <dir>`, `inkdeck create <dir>` delegates) — app.tsx/mocks.json/app.test.tsx (the reference app + harness test), package.json (dev/start/check/test/render), tsconfig, .gitignore, README (documents the known-good Tailwind subset, §18.6), CLAUDE.md (agent workflow + full §11.2 protocol reference)
 - ✅ `skills/inkdeck/SKILL.md` — architecture, feedback loop, invariants, patterns
-- ✅ Determinism pass: two fresh processes produce byte-identical PNGs/hashes (`raster/determinism.test.ts`); golden SHA-256s for the reference key (RGBA/JPEG/PNG) committed in `raster/golden.json`, recorded on macOS arm64 — **cross-machine byte-identity still needs a second machine/CI run against those goldens** (a mismatch there is a real finding, not a golden refresh)
+- ✅ Determinism pass: two fresh processes produce byte-identical PNGs/hashes (`raster/determinism.test.ts`); golden SHA-256s for the reference key (RGBA/JPEG/PNG) committed in `raster/golden.json`, recorded on macOS arm64 — cross-machine byte-identity **verified on Linux x64 / Bun 1.3.14 (review 2026-08-18)** and locked in by the CI matrix (`.github/workflows/ci.yml`; a mismatch there is a real finding, not a golden refresh)
 - ✅ Debug render metrics every 10 s with `--debug` (verified on hardware: `metrics(10s): flushes=2 scene-skip=0% dedup=0% render avg=6.0ms peak=9.4ms`)
 
 ## Decisions
@@ -80,5 +80,5 @@ binding via dlsym.
 ## Known gaps / risks
 
 - Hardware verification covers the **XL only** — MK.2/V2/Neo share the gen-2 protocol and should Just Work, but their product IDs/geometry are still transcription-only.
-- `settled()` quiescence polling adds ~10 ms latency and is not event-precise — needs tightening for the M3 harness protocol.
+- ✅ `settled()` tightened (2026-08-18): each pass flushes React passive effects + sync work, tracks the commit count and yields 0 ms macrotasks instead of 5 ms sleeps — no timed floor under frozen time + mocked exec. Still a quiescence heuristic for real I/O (a real subprocess in flight is not awaited).
 - Takumi v2 resolves Tailwind via `tw`; the supported utility subset is not yet documented for app authors (§18.6 — do this with the scaffold README in M4).

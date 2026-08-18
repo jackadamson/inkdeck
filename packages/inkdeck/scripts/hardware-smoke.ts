@@ -10,7 +10,7 @@
 // examples/mic-mute/HARDWARE.md.
 
 import { parseArgs } from 'node:util'
-import sharp from 'sharp'
+import { RasterEngine } from '../src/raster/takumi.js'
 import { IOKitTransport } from '../src/transport/iokit.js'
 import { requireRenderableModel } from '../src/device/models.js'
 import { encodeBrightness, encodeKeyImagePackets, encodeReset, parseInputReport } from '../src/device/protocol.js'
@@ -66,7 +66,11 @@ try {
   // getFeature: serial should match what IOKit's device property reported.
   const serialReport = await handle.getFeature(0x06, 32)
   const serial = featureString(serialReport, 2)
-  step('getFeature(0x06) serial matches IOKit property', serial === info.serial, `feature="${serial}" iokit="${info.serial}"`)
+  step(
+    'getFeature(0x06) serial matches IOKit property',
+    serial === info.serial,
+    `feature="${serial}" iokit="${info.serial}"`,
+  )
 
   const fwReport = await handle.getFeature(0x05, 32)
   const firmware = featureString(fwReport, 6)
@@ -91,12 +95,20 @@ try {
     { r: 108, g: 113, b: 196 },
   ]
   let packetsSent = 0
+  const raster = new RasterEngine()
   for (let key = 0; key < Math.min(model.columns, colors.length); key++) {
-    const jpeg = await sharp({
-      create: { width: model.keyW, height: model.keyH, channels: 3, background: colors[key] },
-    })
-      .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-      .toBuffer()
+    const { r, g, b } = colors[key]!
+    const rgba = await raster.renderScene(
+      {
+        kind: 'element',
+        tag: 'div',
+        className: 'h-full w-full',
+        style: { backgroundColor: `rgb(${r}, ${g}, ${b})` },
+        children: [],
+      },
+      model,
+    )
+    const jpeg = await raster.rgbaToJpeg(rgba, model)
     for (const packet of encodeKeyImagePackets(model, key, jpeg)) {
       await handle.writeOutput(packet)
       packetsSent++
