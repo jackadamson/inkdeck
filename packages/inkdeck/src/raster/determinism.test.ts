@@ -26,7 +26,7 @@ const sha256 = (data: Uint8Array) => createHash('sha256').update(data).digest('h
 
 async function renderOnce(): Promise<{ png: Buffer; manifestHash: string }> {
   const out = mkdtempSync(join(tmpdir(), 'inkdeck-determinism-'))
-  const proc = Bun.spawn(['bun', CLI, 'render', EXAMPLE, '--out', out, '--model', 'mk2'], {
+  const proc = Bun.spawn([process.execPath, CLI, 'render', EXAMPLE, '--out', out, '--model', 'mk2'], {
     stdout: 'pipe',
     stderr: 'pipe',
   })

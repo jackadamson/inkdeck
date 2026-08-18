@@ -18,8 +18,8 @@ export interface KeyProps {
   /** The physical key slot this element owns (row-major, 0-based). */
   position: number
   /** May be async; rejections are caught and logged, never fatal (§10). */
-  onPress?: () => void | Promise<void>
-  onLongPress?: () => void | Promise<void>
+  onPress?: () => unknown
+  onLongPress?: () => unknown
   longPressMs?: number
   children?: ReactNode
 }

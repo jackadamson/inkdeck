@@ -54,7 +54,7 @@ export function startSimulatorServer(
     ws.send(JSON.stringify(png ? { type: 'key', position, png } : { type: 'clear', position }))
   }
 
-  const server: Server = Bun.serve<WsData>({
+  const server: Server<WsData> = Bun.serve<WsData>({
     hostname: '127.0.0.1',
     port: 0,
     fetch(req, srv) {
@@ -135,7 +135,7 @@ export function startSimulatorServer(
     for (const ws of sockets) ws.send(payload)
   })
 
-  const port = server.port
+  const port = server.port ?? 0
   return {
     url: `http://127.0.0.1:${port}/#${token}`,
     port,

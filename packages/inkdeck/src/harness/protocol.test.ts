@@ -3,6 +3,7 @@
 // command acknowledged, rendered only on actual change, malformed input is an
 // error event not a crash, EOF exits cleanly.
 
+import type { Subprocess } from 'bun'
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -19,14 +20,14 @@ interface AgentEvent {
 
 /** Drives one agent subprocess; reads events as newline-delimited JSON. */
 class AgentClient {
-  proc: ReturnType<typeof Bun.spawn>
+  proc: Subprocess<'pipe', 'pipe', 'pipe'>
   #events: AgentEvent[] = []
   #buffer = ''
   #waiters: Array<() => void> = []
   #reader: Promise<void>
 
   constructor(args: string[]) {
-    this.proc = Bun.spawn(['bun', CLI, 'agent', ...args], {
+    this.proc = Bun.spawn([process.execPath, CLI, 'agent', ...args], {
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',
