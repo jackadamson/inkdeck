@@ -103,28 +103,39 @@ describe('inkdeck agent protocol (§11.2)', () => {
     expect(ready.event).toBe('ready')
     expect(keyText(ready, 0)).toEqual(['mic', 'LIVE'])
 
-    // press ⇒ optimistic toggle ⇒ rendered with changed=[0].
-    client.send({ cmd: 'press', position: 0 })
-    const rendered = await client.nextNonLog()
-    expect(rendered.event).toBe('rendered')
-    expect(rendered.changed).toEqual([0])
-    expect(keyText(rendered, 0)).toEqual(['mic', 'MUTED'])
+    // press ⇒ optimistic MUTED, then the app re-polls at once (refresh) and
+    // the mock still reads 75 ⇒ LIVE. Depending on raster coalescing that is
+    // zero or more rendered notifications (changed=[0]) — when the MUTED frame
+    // is coalesced away the pixels end up unchanged — followed by exactly one
+    // state ack echoing the command id and showing LIVE.
+    client.send({ cmd: 'press', position: 0, id: 'p1' })
+    let ack = await client.nextNonLog()
+    while (ack.event === 'rendered') {
+      expect(ack.changed).toEqual([0])
+      expect(ack.id).toBe('p1')
+      ack = await client.nextNonLog()
+    }
+    expect(ack.event).toBe('state')
+    expect(ack.id).toBe('p1')
+    expect(keyText(ack, 0)).toEqual(['mic', 'LIVE'])
 
-    // release changes no pixels ⇒ acknowledged with state, not rendered.
-    client.send({ cmd: 'release', position: 0 })
-    const releaseAck = await client.nextNonLog()
-    expect(releaseAck.event).toBe('state')
-
-    // snapshot reflects the same manifest.
+    // snapshot reflects the same manifest (no id ⇒ no id on the ack).
     client.send({ cmd: 'snapshot' })
     const state = await client.nextNonLog()
     expect(state.event).toBe('state')
-    expect(keyText(state, 0)).toEqual(['mic', 'MUTED'])
+    expect(state.id).toBeUndefined()
+    expect(keyText(state, 0)).toEqual(['mic', 'LIVE'])
 
-    // advanceTime fires the next poll; the mock still reads 75 ⇒ LIVE again.
+    // release changes no pixels ⇒ a state ack, no rendered.
+    client.send({ cmd: 'release', position: 0, id: 2 })
+    const releaseAck = await client.nextNonLog()
+    expect(releaseAck.event).toBe('state')
+    expect(releaseAck.id).toBe(2)
+
+    // advanceTime fires the next poll; the mock still reads 75 ⇒ no change ⇒ state.
     client.send({ cmd: 'advanceTime', ms: 1000 })
     const reconciled = await client.nextNonLog()
-    expect(reconciled.event).toBe('rendered')
+    expect(reconciled.event).toBe('state')
     expect(keyText(reconciled, 0)).toEqual(['mic', 'LIVE'])
   })
 

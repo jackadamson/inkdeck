@@ -18,13 +18,18 @@ interface AgentFlags {
   mockExec?: string
 }
 
-type Command =
-  | { cmd: 'press' | 'release'; position: number }
-  | { cmd: 'tap'; position: number; holdMs?: number }
-  | { cmd: 'snapshot' }
-  | { cmd: 'advanceTime'; ms: number }
-  | { cmd: 'writeFrames'; dir: string }
-  | { cmd: 'exit' }
+/** Optional client-supplied correlation id, echoed on the command's events. */
+type CommandId = { id?: string | number }
+
+type Command = CommandId &
+  (
+    | { cmd: 'press' | 'release'; position: number }
+    | { cmd: 'tap'; position: number; holdMs?: number }
+    | { cmd: 'snapshot' }
+    | { cmd: 'advanceTime'; ms: number }
+    | { cmd: 'writeFrames'; dir: string }
+    | { cmd: 'exit' }
+  )
 
 export async function agentCommand(appPath: string, flags: AgentFlags): Promise<number> {
   const emit = (event: Record<string, unknown>): void => {
@@ -56,10 +61,13 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
     fonts: app.config.fonts,
   })
 
-  let renderedCount = 0
+  // The command being processed, so notifications emitted meanwhile can be
+  // correlated by clients (unsolicited poller renders interleave otherwise).
+  let inFlight: CommandId = {}
+  const tagged = (event: Record<string, unknown>): Record<string, unknown> =>
+    inFlight.id === undefined ? event : { ...event, id: inFlight.id }
   session.controller.onRendered((changed) => {
-    renderedCount++
-    emit({ event: 'rendered', changed, manifest: session.manifest() })
+    emit(tagged({ event: 'rendered', changed, manifest: session.manifest() }))
   })
   session.controller.onHandlerError((position, handler, error) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
@@ -83,8 +91,9 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
     return value
   }
 
+  // Every command ends with exactly one terminal ack carrying its id:
+  // state / frames / exit, or error. `rendered` events are notifications.
   const handle = async (command: Command): Promise<void> => {
-    const renderedBefore = renderedCount
     switch (command.cmd) {
       case 'press':
         session.press(requireNumber(command.position, 'position'))
@@ -99,9 +108,7 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
         )
         break
       case 'snapshot':
-        await session.settled()
-        emit({ event: 'state', manifest: session.manifest() })
-        return
+        break
       case 'advanceTime':
         session.advanceTime(requireNumber(command.ms, 'ms'))
         break
@@ -111,22 +118,20 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
         }
         await session.settled()
         const manifest = await session.writeFrames(command.dir)
-        emit({ event: 'frames', dir: command.dir, keys: manifest.keys.length })
+        emit(tagged({ event: 'frames', dir: command.dir, keys: manifest.keys.length }))
         return
       }
       case 'exit':
-        emit({ event: 'exit' })
+        emit(tagged({ event: 'exit' }))
         await shutdown(0)
         return
       default:
         throw new Error(`unknown cmd "${(command as { cmd?: unknown }).cmd}"`)
     }
-    // press/release/tap/advanceTime: let the effects drain, then ack — the
-    // rendered event(s) are the ack when pixels changed, state otherwise.
+    // press/release/tap/advanceTime/snapshot: let the effects drain (any
+    // rendered notifications go out first), then ack with the manifest.
     await session.settled()
-    if (renderedCount === renderedBefore) {
-      emit({ event: 'state', manifest: session.manifest() })
-    }
+    emit(tagged({ event: 'state', manifest: session.manifest() }))
   }
 
   // Commands run strictly sequentially: the next stdin line is not processed
@@ -141,14 +146,19 @@ export async function agentCommand(appPath: string, flags: AgentFlags): Promise<
       emit({ event: 'error', scope: 'protocol', message: `malformed JSON line: ${trimmed.slice(0, 200)}` })
       continue
     }
+    inFlight = parsed && typeof parsed === 'object' && parsed.id !== undefined ? { id: parsed.id } : {}
     try {
       await handle(parsed)
     } catch (error) {
-      emit({
-        event: 'error',
-        scope: 'protocol',
-        message: error instanceof Error ? error.message : String(error),
-      })
+      emit(
+        tagged({
+          event: 'error',
+          scope: 'protocol',
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    } finally {
+      inFlight = {}
     }
   }
 

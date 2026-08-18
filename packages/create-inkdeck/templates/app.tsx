@@ -14,7 +14,7 @@ const setVolume = (level: number) => ['osascript', '-e', `set volume input volum
 export default function App() {
   const [muted, setMuted] = useState<boolean | null>(null)
 
-  usePoller(async () => {
+  const { refresh } = usePoller(async () => {
     const { stdout, exitCode } = await exec(READ_VOLUME)
     if (exitCode === 0) {
       const volume = Number.parseInt(stdout.trim(), 10)
@@ -24,9 +24,10 @@ export default function App() {
 
   const toggle = useCallback(async () => {
     const next = !(muted ?? false)
-    setMuted(next) // optimistic; the next poll reconciles
+    setMuted(next) // optimistic…
     await exec(setVolume(next ? 0 : 75))
-  }, [muted])
+    refresh() // …then reconcile immediately instead of waiting for the next poll
+  }, [muted, refresh])
 
   const bg = muted === null ? 'bg-[#374151]' : muted ? 'bg-[#b91c1c]' : 'bg-[#0a7d33]'
   const label = muted === null ? '?' : muted ? 'MUTED' : 'LIVE'

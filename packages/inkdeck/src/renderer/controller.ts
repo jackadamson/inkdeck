@@ -4,7 +4,7 @@
 
 import { createElement, type ReactNode } from 'react'
 import { ConcurrentRoot } from 'react-reconciler/constants.js'
-import type { Model } from '../device/models.js'
+import type { Model, ModelId } from '../device/models.js'
 import {
   encodeBrightness,
   encodeKeyImagePackets,
@@ -38,11 +38,15 @@ const METRICS_WINDOW_MS = 10_000
 const DISCONNECT_GRACE_MS = 1200
 
 export interface DeckInfo {
-  model: string
+  model: ModelId
   columns: number
   rows: number
   keyCount: number
   serial: string | null
+  /** Row-major position → { row, col }. */
+  coordsOf(position: number): { row: number; col: number }
+  /** { row, col } → row-major position. */
+  positionOf(row: number, col: number): number
 }
 
 export interface KeySnapshot {
@@ -88,6 +92,7 @@ export class DeckController {
   readonly raster: RasterEngine
 
   readonly #execScope: ExecScope
+  readonly #deckInfo: DeckInfo
   #releaseExecScope: () => void
   #handle: TransportHandle
   #serial: string | null
@@ -130,6 +135,7 @@ export class DeckController {
     this.raster = new RasterEngine(options.assetDir)
     this.#handle = options.handle
     this.#serial = options.serial ?? null
+    this.#deckInfo = this.#buildDeckInfo()
     this.#input = new InputMachine({
       clock: this.clock,
       keyCount: this.keyCount,
@@ -188,14 +194,22 @@ export class DeckController {
     return this.model.columns * this.model.rows
   }
 
+  /** Stable for the life of the controller (safe as an effect dependency). */
   get deckInfo(): DeckInfo {
-    return {
+    return this.#deckInfo
+  }
+
+  #buildDeckInfo(): DeckInfo {
+    const columns = this.model.columns
+    return Object.freeze({
       model: this.model.id,
-      columns: this.model.columns,
+      columns,
       rows: this.model.rows,
       keyCount: this.keyCount,
       serial: this.#serial,
-    }
+      coordsOf: (position: number) => ({ row: Math.floor(position / columns), col: position % columns }),
+      positionOf: (row: number, col: number) => row * columns + col,
+    })
   }
 
   async start(): Promise<void> {

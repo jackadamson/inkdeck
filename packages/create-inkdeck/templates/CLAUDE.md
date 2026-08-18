@@ -37,7 +37,9 @@ red pixels.
 
 ## Agent protocol (JSON-lines over stdio)
 
-One JSON object per line. Commands on stdin, events on stdout.
+One JSON object per line. Commands on stdin, events on stdout. Any command
+may carry an `"id"` (string or number); it is echoed on every event that
+command produces.
 
 Commands:
 
@@ -53,18 +55,22 @@ Commands:
 Events:
 
 ```
-{"event":"ready","manifest":{…}}                    // once, at startup
-{"event":"rendered","changed":[0],"manifest":{…}}   // only when pixels actually changed
-{"event":"state","manifest":{…}}                    // snapshot reply / no-change ack
-{"event":"frames","dir":"./out","keys":1}
-{"event":"error","scope":"press","position":0,"message":"…"}
+{"event":"ready","manifest":{…}}                          // once, at startup
+{"event":"rendered","changed":[0],"manifest":{…},"id":…}  // notification: pixels changed
+{"event":"state","manifest":{…},"id":…}                   // ack: press/release/tap/advanceTime/snapshot
+{"event":"frames","dir":"./out","keys":1,"id":…}          // ack: writeFrames
+{"event":"error","scope":"press","position":0,"message":"…","id":…}
 {"event":"log","stream":"stderr","line":"…"}
-{"event":"exit"}
+{"event":"exit","id":…}
 ```
 
-Guarantees: every command is acknowledged by at least one event; `rendered`
-fires only on real change; malformed input yields an `error` event, never a
-crash; EOF on stdin exits cleanly.
+Guarantees: every command ends with exactly one terminal ack — `state`,
+`frames` or `exit` (or `error`) — after its effects have settled, so "wait for
+the ack, then read `manifest`" is always correct. `rendered` events are
+notifications: they fire only on real pixel change, may arrive at any time
+(pollers), and carry the `id` of the command in flight when there is one.
+Malformed input yields an `error` event, never a crash; EOF on stdin exits
+cleanly.
 
 ## Determinism switches
 

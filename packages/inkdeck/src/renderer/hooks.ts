@@ -1,6 +1,6 @@
 // Public hooks (SPEC §7.2).
 
-import { useContext, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { DeckContext } from './context.js'
 import type { DeckController, DeckInfo } from './controller.js'
 
@@ -12,18 +12,25 @@ function useController(hook: string): DeckController {
   return controller
 }
 
-/** Connected (or simulated) deck geometry. Null-safe in headless: serial is null. */
+/**
+ * Connected (or simulated) deck geometry plus grid helpers. The object is
+ * stable for the life of the session (safe as an effect dependency); serial
+ * is null in headless. `coordsOf`/`positionOf` convert between row-major key
+ * positions and (row, col) so grid apps stop hand-rolling `position % columns`.
+ */
 export function useDeckInfo(): DeckInfo {
   return useController('useDeckInfo').deckInfo
 }
 
-export function useBrightness(): [number, (n: number) => void] {
+/** [brightness, setBrightness]; the setter identity is stable. */
+export function useBrightness(): [number, (percent: number) => void] {
   const controller = useController('useBrightness')
   const value = useSyncExternalStore(
     (cb) => controller.subscribeBrightness(cb),
     () => controller.brightness,
   )
-  return [value, (n: number) => controller.setBrightness(n)]
+  const set = useCallback((percent: number) => controller.setBrightness(percent), [controller])
+  return [value, set]
 }
 
 export function useKeyState(position: number): { pressed: boolean } {
@@ -35,25 +42,37 @@ export function useKeyState(position: number): { pressed: boolean } {
   return { pressed }
 }
 
-/** Interval built on the injectable clock (§11.3): fires immediately, then every ms. */
-export function usePoller(fn: () => void | Promise<void>, ms: number): void {
+export interface Poller {
+  /** Run the poller now (e.g. right after acting, instead of waiting for the next tick). */
+  refresh: () => void
+}
+
+/**
+ * Interval built on the injectable clock (§11.3): fires immediately, then
+ * every ms. Always calls the *latest* callback (props/state read inside it
+ * are current, not mount-time values). Returns { refresh } for on-demand runs.
+ */
+export function usePoller(fn: () => unknown, ms: number): Poller {
   const controller = useController('usePoller')
-  useEffect(() => {
-    const run = (): void => {
-      try {
-        const result = controller.runInScope(fn)
-        if (result && typeof result.then === 'function') {
-          void result.catch((error) => {
-            console.error(`[inkdeck] usePoller callback failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-          })
-        }
-      } catch (error) {
-        console.error(`[inkdeck] usePoller callback failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-      }
+  const latest = useRef(fn)
+  latest.current = fn
+  const run = useCallback((): void => {
+    const report = (error: unknown): void => {
+      console.error(`[inkdeck] usePoller callback failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
     }
+    try {
+      const result = controller.runInScope(() => latest.current())
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        void (result as Promise<unknown>).catch(report)
+      }
+    } catch (error) {
+      report(error)
+    }
+  }, [controller])
+  useEffect(() => {
     run()
     const id = controller.clock.setInterval(run, ms)
     return () => controller.clock.clearInterval(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fn identity is intentionally not a dependency
-  }, [controller, ms])
+  }, [controller, ms, run])
+  return useMemo(() => ({ refresh: run }), [run])
 }

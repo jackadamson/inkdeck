@@ -187,8 +187,8 @@ export default function App() {
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [ripples, setRipples] = useState<RippleState[]>([])
 
-  // usePoller captures its callback once, so handlers read the current tick
-  // through a ref instead of a stale closure.
+  // splash is memoised (stable handler identity), so it reads the current
+  // tick through a ref instead of a stale closure.
   const tickRef = useRef(0)
   tickRef.current = tick
 

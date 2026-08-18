@@ -15,13 +15,15 @@ describe('mic-mute app (agent harness)', () => {
     expect(deck.key(0).hasPress).toBe(true)
     expect(deck.key(0).error).toBeNull()
 
-    // Press ⇒ optimistic MUTED, and the mocked `set volume` command ran.
+    // Press ⇒ optimistic MUTED, the mocked `set volume` command runs, then the
+    // app re-polls immediately (refresh). The mock still reads volume 75, so
+    // it reconciles straight back to LIVE — the drift-correction behaviour
+    // the optimistic update relies on, without waiting for the next tick.
     await deck.tap(0)
     await deck.settled()
-    expect(deck.key(0).text).toEqual(['mic', 'MUTED'])
+    expect(deck.key(0).text).toEqual(['mic', 'LIVE'])
 
-    // Next poll still reads volume 75 from the mock ⇒ reconciles back to LIVE
-    // (exactly the drift-correction behavior the optimistic update relies on).
+    // The regular poll keeps agreeing.
     deck.advanceTime(1000)
     await deck.settled()
     expect(deck.key(0).text).toEqual(['mic', 'LIVE'])

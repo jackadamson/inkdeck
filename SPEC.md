@@ -300,7 +300,8 @@ Structure beats pixels for agents (the accessibility-tree lesson); PNGs are stil
 
 ### 11.2 `inkdeck agent` — JSON-lines protocol over stdio
 
-One JSON object per line. Commands (stdin) / events (stdout):
+One JSON object per line. Commands (stdin) / events (stdout). Any command may
+carry an `"id"` that is echoed on the events it produces:
 
 ```
 → {"cmd":"press","position":0}          → {"cmd":"release","position":0}
@@ -311,13 +312,14 @@ One JSON object per line. Commands (stdin) / events (stdout):
 → {"cmd":"exit"}
 
 ← {"event":"ready","manifest":{…}}
-← {"event":"rendered","changed":[0,3],"manifest":{…}}   // after every commit
-← {"event":"state","manifest":{…}}                       // reply to snapshot
+← {"event":"rendered","changed":[0,3],"manifest":{…}}   // notification: pixels changed
+← {"event":"state","manifest":{…}}                       // terminal ack (press/release/tap/advanceTime/snapshot)
+← {"event":"frames","dir":"./out","keys":1}              // terminal ack (writeFrames)
 ← {"event":"error","scope":"press","position":0,"message":"…"}
 ← {"event":"log","stream":"stderr","line":"…"}
 ```
 
-Guarantees: every command is acknowledged by at least one event; `rendered` fires only when key content actually changed; malformed input ⇒ `error` event, not a crash; EOF on stdin ⇒ clean exit.
+Guarantees: every command ends with exactly one terminal ack (`state`/`frames`/`exit`, or `error`) after its effects settled; `rendered` fires only when key content actually changed and may arrive unsolicited (pollers); malformed input ⇒ `error` event, not a crash; EOF on stdin ⇒ clean exit. The living reference is the scaffold's `CLAUDE.md` (`packages/create-inkdeck/templates/CLAUDE.md`).
 
 ### 11.3 Determinism switches
 
