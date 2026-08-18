@@ -18,7 +18,7 @@ import { DeviceLink } from './deviceLink.js'
 import { Emitter } from './emitter.js'
 import { registerExecScope, runInExecScope, type ExecInterceptor, type ExecScope } from './exec.js'
 import { FlushQueue, type FlushMetrics } from './flushQueue.js'
-import { reconciler } from './hostConfig.js'
+import { flushReact, reconciler } from './hostConfig.js'
 import { createHostRoot, type HostRoot } from './hostTree.js'
 import { InputMachine, type Gesture } from './input.js'
 import { describeError, stderrLogger, type Logger } from './logger.js'
@@ -86,6 +86,7 @@ export class DeckController {
 
   #keys = new Map<number, KeyEntry>()
   #commitPending = false
+  #commitCount = 0
   #commitError: Error | null = null
   #closed = false
 
@@ -266,17 +267,23 @@ export class DeckController {
 
   /**
    * Resolves once React has committed, all pending rasterization/pushes have
-   * drained, and the system has stayed idle across two macrotask checks (so
-   * scheduler-deferred commits from effects or input handlers are caught).
+   * drained, and nothing new happened across two consecutive passes. Each
+   * pass flushes pending passive effects and sync work (so effect-triggered
+   * updates are forced now rather than found later), then yields one
+   * macrotask for the scheduler's concurrent renders. Under frozen time +
+   * mocked exec every remaining step is task-resolvable, so this converges
+   * without timed sleeps; with real I/O it is the same quiescence heuristic.
    */
   async settled(): Promise<void> {
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-    let idleChecks = 0
-    while (idleChecks < 2) {
+    const yieldMacrotask = () => new Promise((resolve) => setTimeout(resolve, 0))
+    let idlePasses = 0
+    while (idlePasses < 2) {
       this.#throwCommitError()
-      const busy = this.#commitPending || this.#queue.busy
-      idleChecks = busy ? 0 : idleChecks + 1
-      await sleep(5)
+      const commitsBefore = this.#commitCount
+      flushReact()
+      const busy = this.#commitPending || this.#queue.busy || this.#commitCount !== commitsBefore
+      idlePasses = busy ? 0 : idlePasses + 1
+      await yieldMacrotask()
     }
     this.#throwCommitError()
   }
@@ -354,6 +361,7 @@ export class DeckController {
   // ---- commit walk ----
 
   #onCommit(): void {
+    this.#commitCount++
     try {
       this.#syncKeys()
     } catch (error) {

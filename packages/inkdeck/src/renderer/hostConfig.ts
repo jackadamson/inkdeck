@@ -203,3 +203,14 @@ const hostConfig = {
 // The published @types lag the 0.32 runtime; the config above matches the
 // runtime contract, so silence the structural mismatch at the boundary.
 export const reconciler = ReactReconciler(hostConfig as never)
+
+/**
+ * Force pending passive effects and sync-lane work to run now. Both exist
+ * on the 0.32 runtime (flushPassiveEffects/flushSyncWork) but are missing
+ * from the published types, hence the structural cast.
+ */
+export function flushReact(): void {
+  const r = reconciler as unknown as { flushPassiveEffects?: () => boolean; flushSyncWork?: () => void }
+  r.flushPassiveEffects?.()
+  r.flushSyncWork?.()
+}
