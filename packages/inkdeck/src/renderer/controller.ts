@@ -180,7 +180,6 @@ export class DeckController {
       },
       () => {},
       () => {},
-      null,
     )
 
     if (options.debug) {
