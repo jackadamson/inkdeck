@@ -1,16 +1,16 @@
-// `inkdeck start <app.tsx> [--device S]` — run once against hardware (SPEC §9).
-// `inkdeck dev` reuses this with watch=true: minimal re-render-on-save for M2;
-// the no-flicker hot-reload polish (changed-set logging, module cache surgery)
-// is M4.
+// `inkdeck start <app.tsx> [--device S]` — run against hardware (SPEC §9),
+// waiting for the deck and surviving unplug/replug. `inkdeck dev` reuses this
+// with watch=true (hot reload, see watchApp).
 
 import { watch } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { dirname, sep } from 'node:path'
 import { createElement, type ComponentType } from 'react'
 import { hardwareTransport } from '../device/discovery.js'
 import { requireRenderableModel } from '../device/models.js'
 import { DeckController } from '../renderer/controller.js'
 import type { DeviceInfo, Transport, TransportHandle } from '../transport/iface.js'
 import { loadApp } from './headless.js'
+import { DEV_BUNDLE_NAME, loadAppBundle, removeAppBundle } from './devBundle.js'
 
 export interface StartOptions {
   device?: string
@@ -76,56 +76,75 @@ async function acquireDevice(
 }
 
 /**
- * Minimal reload-on-save (M2 semantics; the no-flicker/changed-set polish is
- * M4): cache-busting dynamic import so the transport handle and controller
- * stay alive; a broken save logs and keeps watching (§10). Shared by
- * `dev` (hardware) and `dev --simulate`.
+ * Reload-on-save for `dev` (hardware and --simulate). Every save re-bundles
+ * the app's whole module graph (see devBundle.ts) and re-renders into the
+ * live controller, so the transport handle stays open and only keys whose
+ * pixels changed repaint (§13 M4). A broken save logs and keeps watching (§10).
  */
-export function watchApp(absPath: string, displayPath: string, controller: DeckController): void {
-  let generation = 0
+export function watchApp(absPath: string, displayPath: string, controller: DeckController): () => void {
+  const appDir = dirname(absPath)
   let reloading = false
-  // Prove only dirty keys repaint (§13 M4): collect the repainted positions
-  // across each reload and log the set.
+  let dirty = false
   let repainted: number[] = []
-  controller.onRendered((changed) => {
+  const unsubscribe = controller.onRendered((changed) => {
     repainted.push(...changed)
   })
-  const reload = async () => {
-    generation++
-    try {
-      const mod = await import(`${absPath}?inkdeck-reload=${generation}`)
-      const App = mod.default as ComponentType
-      if (typeof App !== 'function') {
-        console.error(`[inkdeck] ${displayPath} no longer default-exports a component — keeping the previous render`)
-        return
-      }
-      repainted = []
-      controller.render(createElement(App))
-      await controller.settled()
-      const changedSet = [...new Set(repainted)].sort((a, b) => a - b)
-      console.error(
-        changedSet.length > 0
-          ? `[inkdeck] reloaded ${displayPath} — repainted keys [${changedSet.join(', ')}]`
-          : `[inkdeck] reloaded ${displayPath} — no visual change`,
-      )
-    } catch (error) {
-      console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
-    } finally {
-      reloading = false
-    }
-  }
-  // Watch the parent directory, not the file: editors (and sed -i) save via
-  // write-to-temp + rename, which replaces the inode and silently kills a
-  // file-scoped watcher after the first save.
-  const base = basename(absPath)
-  watch(dirname(absPath), (_event, filename) => {
-    if (filename && filename !== base) return
-    if (reloading) return
+  const reload = async (): Promise<void> => {
     reloading = true
+    do {
+      dirty = false
+      try {
+        const bundle = await loadAppBundle(absPath)
+        // Image bytes are cached by src; a saved asset must be re-read.
+        controller.raster.clearImageCache()
+        if (bundle.config.fonts?.length) {
+          await controller.raster.loadAppFonts(bundle.config.fonts, appDir)
+        }
+        repainted = []
+        controller.render(createElement(bundle.App))
+        await controller.settled()
+        const changedSet = [...new Set(repainted)].sort((a, b) => a - b)
+        console.error(
+          changedSet.length > 0
+            ? `[inkdeck] reloaded ${displayPath} — repainted keys [${changedSet.join(', ')}]`
+            : `[inkdeck] reloaded ${displayPath} — no visual change`,
+        )
+      } catch (error) {
+        console.error(`[inkdeck] reload failed: ${error instanceof Error ? (error.stack ?? error.message) : error}`)
+      }
+    } while (dirty) // a save landed mid-reload: go again with the latest files
+    reloading = false
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = (): void => {
+    if (reloading) {
+      dirty = true
+      return
+    }
     // Debounce editor save bursts (write + rename events).
-    setTimeout(() => void reload(), 50)
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      void reload()
+    }, 50)
+  }
+  // Watch the app directory recursively (editors save via write-to-temp +
+  // rename, which kills a file-scoped watcher; and imported modules live
+  // anywhere under the app dir). Skip node_modules, VCS dirs and our own
+  // bundle output.
+  const watcher = watch(appDir, { recursive: true }, (_event, filename) => {
+    if (!filename) return schedule()
+    const rel = String(filename)
+    if (rel === DEV_BUNDLE_NAME || rel.split(sep).some((part) => part === 'node_modules' || part === '.git')) return
+    schedule()
   })
-  console.error(`[inkdeck] watching ${displayPath} — save to reload, Ctrl-C to exit`)
+  console.error(`[inkdeck] watching ${displayPath} (and everything under ${appDir}) — save to reload, Ctrl-C to exit`)
+  return () => {
+    watcher.close()
+    if (timer) clearTimeout(timer)
+    unsubscribe()
+    void removeAppBundle(absPath)
+  }
 }
 
 export async function startCommand(appPath: string, options: StartOptions = {}): Promise<number> {
@@ -138,10 +157,12 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   }
 
   let controller: DeckController | null = null
+  let stopWatch: (() => void) | null = null
   let shuttingDown = false
   const shutdown = async (code: number) => {
     if (shuttingDown) return
     shuttingDown = true
+    stopWatch?.()
     // Clear deck, reset, close transport, exit (§9).
     await controller?.shutdown()
     process.exit(code)
@@ -194,7 +215,7 @@ export async function startCommand(appPath: string, options: StartOptions = {}):
   }
 
   if (options.watch) {
-    watchApp(app.appPath, appPath, deck)
+    stopWatch = watchApp(app.appPath, appPath, deck)
   }
 
   // Long-running from here: the IOKit run-loop pump interval keeps the

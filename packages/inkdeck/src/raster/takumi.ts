@@ -27,6 +27,11 @@ export class RasterEngine {
     this.#ready = registerBundledFonts(this.#renderer)
   }
 
+  /** Drop cached <img> bytes (hot reload: a saved asset must be re-read). */
+  clearImageCache(): void {
+    this.#imageCache.clear()
+  }
+
   async loadAppFonts(fontPaths: string[], appDir: string): Promise<void> {
     await this.#ready
     await registerAppFonts(this.#renderer, fontPaths, appDir)

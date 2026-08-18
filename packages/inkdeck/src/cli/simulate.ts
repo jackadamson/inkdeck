@@ -169,7 +169,12 @@ export async function simulateCommand(appPath: string, options: SimulateOptions 
   console.error(`[inkdeck] simulating ${model.id} (${model.columns}×${model.rows})`)
   console.error(`[inkdeck] open ${sim.url}`)
 
+  let stopWatch: (() => void) | null = null
+  let shuttingDown = false
   const shutdown = async () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    stopWatch?.()
     await sim.stop()
     await session.shutdown()
     process.exit(0)
@@ -179,7 +184,7 @@ export async function simulateCommand(appPath: string, options: SimulateOptions 
 
   if (options.watch) {
     const { watchApp } = await import('./start.js')
-    watchApp(app.appPath, appPath, session.controller)
+    stopWatch = watchApp(app.appPath, appPath, session.controller)
   }
 
   return new Promise<number>(() => {})

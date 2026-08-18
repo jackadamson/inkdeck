@@ -2,7 +2,7 @@
 
 import { dirname, resolve } from 'node:path'
 import { createElement, type ComponentType } from 'react'
-import type { InkdeckConfig } from '../index.js'
+import type { InkdeckConfig } from '../config.js'
 import { requireRenderableModel, type Model } from '../device/models.js'
 import { VirtualTransport } from '../transport/virtual.js'
 import { DeckController } from '../renderer/controller.js'

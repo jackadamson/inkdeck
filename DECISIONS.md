@@ -175,12 +175,29 @@ Calling ServerWebSocket.close() (graceful handshake) and then awaiting
 handshake is in flight. The simulator's stop() lets `stop(true)` force-close
 open sockets itself.
 
-## Hot-reload watches the parent directory, not the file
+## Hot reload re-bundles the app graph (SPEC §18.2)
 
-Editors (and `sed -i`) save via write-to-temp + rename, which replaces the
-inode and silently kills a file-scoped `fs.watch` after the first save —
-observed live: the second edit stopped triggering reloads. `watchApp` watches
-`dirname(app)` and filters events to the app's basename.
+Bun's ESM registry has no invalidation API and a cache-busted
+`import(app?gen)` re-evaluates only the entry file — modules it imports stay
+stale, so any app split across files silently ran old code after a save.
+`dev` now bundles the app's whole module graph per reload with `Bun.build`
+(`react*` and `@jackadamson/inkdeck` external, plus any path import that
+resolves into this package, so the app shares the renderer's React and
+DeckContext) into `<appDir>/.inkdeck-dev.js` and imports that with a fresh
+query string. The bundle lives next to the app — not in a temp dir — so bare
+specifiers resolve from the app's node_modules and `import.meta.dir` is still
+the app directory; it is gitignored by the scaffold and removed on exit.
+`bun --hot` was the alternative (park the handle on globalThis and let Bun
+re-run importers), rejected because it re-executes the CLI entry and would
+have to survive re-evaluation of the IOKit transport too.
+
+The watcher is recursive over the app directory (skipping `node_modules`,
+`.git` and the bundle) — editors (and `sed -i`) save via write-to-temp +
+rename, which replaces the inode and kills a file-scoped `fs.watch` after
+the first save. Bun 1.3.11 note: calling `Bun.resolveSync` inside a
+`Bun.build` `onResolve` hook under `bun test` makes later builds of rewritten
+inputs fail with "Unseekable reading file"; the external-path plugin uses
+pure path math instead.
 
 ## Cross-machine determinism gate is a committed golden
 
