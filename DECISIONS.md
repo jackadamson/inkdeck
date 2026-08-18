@@ -12,9 +12,10 @@ The spec predates Takumi's 1.x/2.x line. We use `@takumi-rs/core` +
   field (`className` on Takumi nodes is only used with CSS `stylesheets`).
   inkdeck maps the JSX `className` prop → Takumi `tw`, so app code matches the
   spec's `className` API exactly.
-- `render(node, { format: 'raw' })` returns raw RGBA — that buffer feeds sharp
-  for both the device JPEG (with model transform) and the render/simulator PNG
-  (untransformed), keeping all surfaces pixel-identical (§6.1).
+- `render(node, { format: 'raw' })` returns raw RGBA — that buffer is re-encoded
+  (also by Takumi, see below) for both the device JPEG (with model transform)
+  and the render/simulator PNG (untransformed), keeping all surfaces
+  pixel-identical (§6.1).
 - Fonts are registered per-renderer with `registerFont({ data, name })`;
   nothing system-wide leaks in, which is what makes rendering deterministic.
 
@@ -203,7 +204,7 @@ pure path math instead.
 
 `raster/golden.json` holds SHA-256 hashes (RGBA, JPEG, PNG) of the reference
 app's key 0 in its deterministic frozen-time state, recorded on macOS arm64
-with the pinned Bun/takumi/sharp. `determinism.test.ts` compares against it
+with the pinned Bun/takumi. `determinism.test.ts` compares against it
 on every run; a second machine running the suite IS the cross-machine test.
 A mismatch means a nondeterminism leak or a prebuild difference — investigate
 before regenerating (`INKDECK_UPDATE_GOLDEN=1`).
@@ -250,3 +251,17 @@ every key repainted from its cached scene. Ambiguity still fails fast:
 multiple decks with no --device is an error, and non-device failures exit
 non-zero as before. Verified live on the XL: unplug → one line; replug →
 tile back with state intact.
+
+## sharp removed: Takumi encodes JPEG/PNG and applies the device flip
+
+`@takumi-rs/core` alone covers what sharp did here. Raw RGBA is fed back as an
+`RgbaImage` node (`{ type: 'image', src: { width, height, data } }`); identity
+re-encode is lossless, `transform: 'scale(-1, -1)'` matches libvips'
+`.flip().flop()` byte-for-byte at 72² and 96², `format: 'jpeg', quality: 95`
+produces baseline 4:4:4 JPEG, and `format: 'png'` round-trips losslessly. The
+encode is ~5× faster than sharp per key and drops ~17 MB of libvips per
+platform plus a second native supply-chain surface (SPEC §2). Verified on the
+XL (aurora + mic-mute text: crisp, correct orientation and colours) on
+2026-08-18 before deletion. The goldens' JPEG/PNG hashes changed with the
+encoder (intentional; the RGBA golden is unchanged, which is the raster
+determinism claim).

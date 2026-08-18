@@ -26,12 +26,12 @@ This document is the source of truth for scope, constraints, and behavior. Secti
 |---|---|---|
 | `react` | the point | approved |
 | `react-reconciler` | custom renderer host config | approved (it is in Ink's dependency tree, and Ink is approved) |
-| `@takumi-rs/core` + `@takumi-rs/helpers` | raster core: scene tree → pixels; CSS flexbox, Tailwind `className` resolution, explicit font loading | approved |
-| `sharp` | JPEG encode (4:4:4) of Takumi's raw RGBA + model flip/rotate + image utilities | approved |
+| `@takumi-rs/core` | raster core: scene tree → pixels; CSS flexbox, Tailwind `className` resolution, explicit font loading; also the JPEG (4:4:4) / PNG encoder and model flip via an RgbaImage node | approved |
+| ~~`sharp`~~ | removed 2026-08-18: Takumi encodes JPEG/PNG and applies the flip pixel-exactly (DECISIONS) — one native dependency instead of two | retired |
 
 **Explicitly disallowed:** `node-hid` (not approved — we replace it with `bun:ffi`, §4), `canvas`/`node-canvas`, `jpeg-js`, `pureimage`, any CLI/arg-parsing/chalk-style helper. If you feel you need a utility package, inline the ~50 lines instead. Arg parsing uses `util.parseArgs` (built into Bun's Node compat). Anything from the `bun:` namespace and Bun globals (`Bun.spawn`, `bun test`, `Bun.serve`) is fine.
 
-**Native modules on Bun:** use sharp ≥ 0.33 and current `@takumi-rs/core`; both ship N-API prebuilds as ordinary npm platform packages. Milestone 0's first task is a CI smoke test on the pinned Bun version: Takumi renders a styled `div` with the bundled font → raw RGBA → sharp → JPEG → decode confirms dimensions. If either breaks, stop and flag — do not work around it with a new package. Prebuilds arrive via `npm install` only; running code never fetches `.node` binaries or fonts over the network (§16). Tailwind-style `className` support is Takumi's built-in resolver — do **not** add a `tailwindcss` dependency.
+**Native modules on Bun:** use current `@takumi-rs/core`; it ships N-API prebuilds as ordinary npm platform packages. Milestone 0's first task is a CI smoke test on the pinned Bun version: Takumi renders a styled `div` with the bundled font → raw RGBA → JPEG → header confirms dimensions and 4:4:4. If either breaks, stop and flag — do not work around it with a new package. Prebuilds arrive via `npm install` only; running code never fetches `.node` binaries or fonts over the network (§16). Tailwind-style `className` support is Takumi's built-in resolver — do **not** add a `tailwindcss` dependency.
 
 ## 3. Architecture overview
 
@@ -158,7 +158,7 @@ v1 targets **gen-2 JPEG devices**: MK.2, XL, V2, Mini (gen-2), Neo. Plus (dials/
 - **Reset:** feature report `[0x03, 0x02, 0…]`. Send on startup and on clean shutdown.
 - **Input report:** `[reportId, …, keyStates]` — one byte per key (0/1) at a small model-specific offset. Emit `keydown`/`keyup` per position on change.
 
-Apply the model's flip/rotate transform at raster time (sharp `.flip()/.flop()/.rotate()`), not by mangling JPEG bytes.
+Apply the model's flip/rotate transform at raster time (CSS `transform` on the RGBA image node when re-encoding), not by mangling JPEG bytes.
 
 ## 6. Rasterization pipeline
 
@@ -167,7 +167,7 @@ Apply the model's flip/rotate transform at raster time (sharp `.flip()/.flop()/.
 Each `<Key>`'s children form a small scene tree of standard elements (§7.1). The raster layer converts it to Takumi nodes (via `@takumi-rs/helpers`) and renders at the model's native key resolution:
 
 - Layout and styling are Takumi's CSS subset: flexbox (`div` defaults to `display: flex`), Tailwind utility classes via `className`, inline `style` reserved for dynamic values (data-driven colors, computed sizes).
-- Takumi renders to **raw RGBA**; sharp then applies the model transform (`.flip()/.flop()/.rotate()`) and encodes `.jpeg({ quality: 95, chromaSubsampling: '4:4:4' })` for the HID push. The `render` command and simulator want PNGs — encode those from the **same RGBA buffer** so all three surfaces are pixel-identical.
+- Takumi renders to **raw RGBA**; that buffer is fed back to Takumi as an `RgbaImage` node with the model transform as CSS and encoded `{ format: 'jpeg', quality: 95 }` (4:4:4) for the HID push. The `render` command and simulator want PNGs — encode those from the **same RGBA buffer** so all three surfaces are pixel-identical.
 - `img` sources (file path or Buffer) are resolved by the raster layer and handed to Takumi as image nodes.
 
 **Fonts are explicit — this is the determinism mechanism.** Takumi cannot see system fonts; every font is loaded from file data. Ship one bundled OFL-licensed default (regular + bold) that is always registered; apps add faces via `export const config = { fonts: [...] }` (§8). No fontconfig, no runtime network fetch, no environment dependence.

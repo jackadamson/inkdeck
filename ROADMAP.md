@@ -25,7 +25,7 @@ Status legend: ✅ done · 🔨 in progress · ⬜ not started · ⏸ blocked (r
 - ✅ Hooks: `useDeckInfo`, `useBrightness`, `useKeyState`, `usePoller` (on the injectable clock; `SystemClock`/`FrozenClock` in `renderer/clock.ts`)
 - ✅ `exec` wrapper over `Bun.spawn` with interceptor seam for `--mock-exec` (M3)
 - ✅ Scene hashing (skip render) + RGBA output dedup (skip push) + coalesced flush with input-priority ordering (§6.2)
-- ✅ Raster pipeline: scene → Takumi RGBA → sharp model transform → JPEG 4:4:4 (device) / PNG (render command) from the same RGBA buffer
+- ✅ Raster pipeline: scene → Takumi RGBA → model transform + JPEG 4:4:4 (device) / PNG (render command), all Takumi since 2026-08-18 (sharp removed, see DECISIONS), from the same RGBA buffer
 - ✅ Manifest builder (§11.1: text in document order, image hash, error, hasPress/hasLongPress)
 - ✅ `inkdeck render <app> --out DIR --model M` (PNGs + manifest.json)
 - ✅ `inkdeck check <app>` (typecheck via dynamically resolved `typescript` + one headless render; exit 0/1)

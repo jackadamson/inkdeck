@@ -8,7 +8,7 @@ description: Working on or with inkdeck — a custom React renderer targeting El
 **inkdeck** (`@jackadamson/inkdeck`) renders React to an Elgato Stream Deck
 over raw USB HID — think Ink, but the "terminal" is a grid of LCD keys. Runtime
 is Bun (pinned in `.tool-versions`); deps are locked to react/react-reconciler,
-Takumi (raster), sharp (encode) — do not add packages (SPEC §2 is exhaustive).
+Takumi (raster + JPEG/PNG encode) — do not add packages (SPEC §2 is exhaustive).
 
 ## Architecture (4 layers, strictly separated)
 
@@ -16,7 +16,7 @@ Takumi (raster), sharp (encode) — do not add packages (SPEC §2 is exhaustive)
 React app (app.tsx default-exports a component)
 Renderer   react-reconciler hostConfig → per-key scene trees → dirty diffing
            packages/inkdeck/src/renderer/ (controller.ts is the heart)
-Raster     scene → Takumi RGBA → sharp JPEG(device)/PNG(files), same buffer
+Raster     scene → Takumi RGBA → Takumi JPEG(device)/PNG(files), same buffer
            packages/inkdeck/src/raster/   fonts are explicit — determinism
 Device     model tables + gen-2 report framing
            packages/inkdeck/src/device/   (hardware-verified on an XL)

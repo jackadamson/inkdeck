@@ -1,9 +1,10 @@
-// M0 smoke test (SPEC §13 M0): Takumi renders a styled div with the bundled
-// font → raw RGBA → sharp → JPEG → decode confirms dimensions. If this breaks
-// on the pinned Bun, stop and flag — do not work around it with a new package (§2).
+// Raster smoke test (SPEC §13 M0): Takumi renders a styled div with the bundled
+// font → raw RGBA → JPEG/PNG (also Takumi); headers confirm dimensions and 4:4:4.
+// If this breaks on the pinned Bun, stop and flag — do not work around it with
+// a new package (§2).
 
 import { describe, expect, test } from 'bun:test'
-import sharp from 'sharp'
+import { imageInfo } from '../test/imageInfo.js'
 import { modelById } from '../device/models.js'
 import { RasterEngine } from './takumi.js'
 import type { SceneNode } from './scene.js'
@@ -31,7 +32,7 @@ const scene: SceneNode = {
 }
 
 describe('raster pipeline (M0 smoke)', () => {
-  test('scene → RGBA → sharp JPEG → decoded dimensions match the model', async () => {
+  test('scene → RGBA → JPEG/PNG whose headers match the model', async () => {
     const engine = new RasterEngine()
     const rgba = await engine.renderScene(scene, mk2)
     expect(rgba.length).toBe(mk2.keyW * mk2.keyH * 4)
@@ -44,17 +45,30 @@ describe('raster pipeline (M0 smoke)', () => {
     expect(nonBackground).toBeGreaterThan(50)
 
     const jpeg = await engine.rgbaToJpeg(rgba, mk2)
-    const meta = await sharp(Buffer.from(jpeg)).metadata()
-    expect(meta.format).toBe('jpeg')
-    expect(meta.width).toBe(mk2.keyW)
-    expect(meta.height).toBe(mk2.keyH)
-    expect(meta.chromaSubsampling).toBe('4:4:4')
+    expect(imageInfo(jpeg)).toEqual({ format: 'jpeg', width: mk2.keyW, height: mk2.keyH, chromaSubsampling: '4:4:4' })
 
     const png = await engine.rgbaToPng(rgba, mk2)
-    const pngMeta = await sharp(Buffer.from(png)).metadata()
-    expect(pngMeta.format).toBe('png')
-    expect(pngMeta.width).toBe(mk2.keyW)
-    expect(pngMeta.height).toBe(mk2.keyH)
+    expect(imageInfo(png)).toEqual({ format: 'png', width: mk2.keyW, height: mk2.keyH })
+  })
+
+  test('the device JPEG is the RGBA flipped both ways (gen-2 transform), pixel-exact', async () => {
+    const engine = new RasterEngine()
+    // An asymmetric scene: red top-left quadrant on black.
+    const rgba = await engine.renderScene(
+      { kind: 'element', tag: 'div', style: { width: 36, height: 36, backgroundColor: '#ff0000' }, children: [] },
+      mk2,
+    )
+    const w = mk2.keyW
+    const at = (buf: Uint8Array, x: number, y: number) => [buf[(y * w + x) * 4], buf[(y * w + x) * 4 + 1], buf[(y * w + x) * 4 + 2]]
+    expect(at(rgba, 5, 5)).toEqual([255, 0, 0])
+    expect(at(rgba, w - 6, w - 6)).toEqual([0, 0, 0])
+    // Decode the JPEG back through Takumi and check the quadrant moved to bottom-right.
+    const jpeg = await engine.rgbaToJpeg(rgba, mk2)
+    const decoded = await engine.decodeToRgba(jpeg, mk2.keyW, mk2.keyH)
+    const [r1] = at(decoded, w - 6, w - 6)
+    const [r2] = at(decoded, 5, 5)
+    expect(r1).toBeGreaterThan(200)
+    expect(r2).toBeLessThan(40)
   })
 
   test('rendering is deterministic: identical scene ⇒ byte-identical RGBA and JPEG', async () => {

@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import sharp from 'sharp'
+import { Renderer } from '@takumi-rs/core'
 import { Deck, Image, Key } from '../index.js'
 import { buildManifest } from '../harness/manifest.js'
 import { mountVirtual } from '../test/helpers.js'
@@ -15,10 +15,12 @@ const dir = mkdtempSync(join(tmpdir(), 'inkdeck-img-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 async function solidPng(r: number, g: number, b: number): Promise<Uint8Array> {
+  const renderer = new Renderer()
   return new Uint8Array(
-    await sharp({ create: { width: 8, height: 8, channels: 4, background: { r, g, b, alpha: 1 } } })
-      .png()
-      .toBuffer(),
+    await renderer.render(
+      { type: 'container', style: { width: 8, height: 8, backgroundColor: `rgb(${r}, ${g}, ${b})` } },
+      { width: 8, height: 8, format: 'png' },
+    ),
   )
 }
 

@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import sharp from 'sharp'
+import { imageInfo } from '../test/imageInfo.js'
 
 const CLI = join(import.meta.dir, 'index.ts')
 import { MIC_MUTE_APP as EXAMPLE } from '../test/helpers.js'
@@ -40,10 +40,8 @@ describe('inkdeck CLI', () => {
     expect(key0.hasPress).toBe(true)
     expect(key0.hasLongPress).toBe(false)
 
-    const meta = await sharp(join(out, 'key-0.png')).metadata()
-    expect(meta.format).toBe('png')
-    expect(meta.width).toBe(72)
-    expect(meta.height).toBe(72)
+    const info = imageInfo(new Uint8Array(await Bun.file(join(out, 'key-0.png')).arrayBuffer()))
+    expect(info).toEqual({ format: 'png', width: 72, height: 72 })
   }, 30000)
 
   test('check exits 0 on the reference example', async () => {

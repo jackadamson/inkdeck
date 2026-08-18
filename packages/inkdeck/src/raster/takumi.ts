@@ -1,11 +1,12 @@
-// Raster pipeline (SPEC §6): scene tree → Takumi node → raw RGBA → sharp.
-// The JPEG (device push) and PNG (render command / simulator) are encoded from
-// the same RGBA buffer so every surface shows identical pixels.
+// Raster pipeline (SPEC §6): scene tree → Takumi node → raw RGBA, then JPEG
+// (device push, model transform applied) and PNG (render command / simulator,
+// upright) are encoded from that same RGBA buffer — also by Takumi, fed back
+// as an RgbaImage node — so every surface shows identical pixels and the
+// only native dependency is Takumi (SPEC §2).
 
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Renderer, type ImageSource, type Node as TakumiNode } from '@takumi-rs/core'
-import sharp from 'sharp'
 import type { Model } from '../device/models.js'
 import { registerAppFonts, registerBundledFonts } from './fonts.js'
 import { collectImageSources, INLINE_IMAGE_PREFIX, type SceneElement, type SceneNode } from './scene.js'
@@ -59,26 +60,56 @@ export class RasterEngine {
     return new Uint8Array(buffer)
   }
 
-  /** Encode RGBA for the HID push: model flip/rotate transform + JPEG 4:4:4. */
+  /** Decode an encoded image (JPEG/PNG bytes) to raw RGBA at the given size (tests, tooling). */
+  async decodeToRgba(bytes: Uint8Array, width: number, height: number): Promise<Uint8Array> {
+    await this.#ready
+    const src = `${INLINE_IMAGE_PREFIX}decode-${Bun.hash(bytes).toString(16)}`
+    const node: TakumiNode = {
+      type: 'container',
+      style: { width, height, display: 'flex' },
+      children: [{ type: 'image', src, style: { width, height } }],
+    }
+    const buffer = await this.#renderer.render(node, { width, height, format: 'raw', images: [{ src, data: bytes }] })
+    return new Uint8Array(buffer)
+  }
+
+  /** Encode RGBA for the HID push: model flip/rotate transform + JPEG (4:4:4, q95). */
   async rgbaToJpeg(rgba: Uint8Array, model: Model): Promise<Uint8Array> {
-    let pipeline = sharp(Buffer.from(rgba), {
-      raw: { width: model.keyW, height: model.keyH, channels: 4 },
-    })
-    if (model.transform.flipV) pipeline = pipeline.flip()
-    if (model.transform.flipH) pipeline = pipeline.flop()
-    if (model.transform.rotate !== 0) pipeline = pipeline.rotate(model.transform.rotate)
-    const jpeg = await pipeline.jpeg({ quality: 95, chromaSubsampling: '4:4:4' }).toBuffer()
-    return new Uint8Array(jpeg)
+    return this.#encodeRgba(rgba, model, 'jpeg', deviceTransformCss(model))
   }
 
   /** Encode RGBA as PNG for render/simulator surfaces — untransformed (upright). */
   async rgbaToPng(rgba: Uint8Array, model: Model): Promise<Uint8Array> {
-    const png = await sharp(Buffer.from(rgba), {
-      raw: { width: model.keyW, height: model.keyH, channels: 4 },
+    return this.#encodeRgba(rgba, model, 'png', null)
+  }
+
+  /**
+   * Re-encode raw RGBA through Takumi as an RgbaImage node. Identity is
+   * lossless and the CSS flip is pixel-exact (verified against libvips'
+   * flip+flop: 0 differing bytes at 72² and 96²).
+   */
+  async #encodeRgba(rgba: Uint8Array, model: Model, format: 'jpeg' | 'png', transform: string | null): Promise<Uint8Array> {
+    await this.#ready
+    const { keyW: width, keyH: height } = model
+    const swap = model.transform.rotate === 90 || model.transform.rotate === 270
+    const node: TakumiNode = {
+      type: 'container',
+      style: { width: swap ? height : width, height: swap ? width : height, display: 'flex' },
+      children: [
+        {
+          type: 'image',
+          src: { width, height, data: rgba },
+          style: { width, height, ...(transform ? { transform } : {}) },
+        },
+      ],
+    }
+    const buffer = await this.#renderer.render(node, {
+      width: swap ? height : width,
+      height: swap ? width : height,
+      format,
+      ...(format === 'jpeg' ? { quality: 95 } : {}),
     })
-      .png()
-      .toBuffer()
-    return new Uint8Array(png)
+    return new Uint8Array(buffer)
   }
 
   /**
@@ -167,4 +198,15 @@ export class RasterEngine {
     }
     return { src, data: await pending }
   }
+}
+
+/** The model's image transform (SPEC §5.3) as CSS applied to the RGBA node. */
+function deviceTransformCss(model: Model): string | null {
+  const parts: string[] = []
+  const { flipH, flipV, rotate } = model.transform
+  if (flipH && flipV) parts.push('scale(-1, -1)')
+  else if (flipH) parts.push('scaleX(-1)')
+  else if (flipV) parts.push('scaleY(-1)')
+  if (rotate !== 0) parts.push(`rotate(${rotate}deg)`)
+  return parts.length ? parts.join(' ') : null
 }
